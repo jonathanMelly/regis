@@ -1,0 +1,147 @@
+// internal/ssh/transfer.go
+package ssh
+
+import (
+	"crypto/md5"
+	"fmt"
+	"io"
+	"io/fs"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/pkg/sftp"
+)
+
+// UploadBytes writes data to remotePath using SFTP + atomic mv.
+// Writes to remotePath+".new" first, then renames (with optional sudo).
+func (c *Conn) UploadBytes(data []byte, remotePath string, mode fs.FileMode, useSudo bool) error {
+	tmpPath := remotePath + ".new"
+
+	// Write via SFTP (transplanted from jelastic-gateway)
+	sc, err := sftp.NewClient(c.client)
+	if err != nil {
+		return fmt.Errorf("sftp client: %w", err)
+	}
+	defer sc.Close()
+
+	f, err := sc.Create(tmpPath)
+	if err != nil {
+		return fmt.Errorf("sftp create %s: %w", tmpPath, err)
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return fmt.Errorf("sftp write %s: %w", tmpPath, err)
+	}
+	f.Close()
+	// sc.Close() removed — defer handles this
+
+	// Set permissions
+	if _, stderr, code, err := c.Run(fmt.Sprintf("chmod %o %s", mode, shellQuote(tmpPath))); err != nil || code != 0 {
+		return fmt.Errorf("chmod %s (exit %d): %s", tmpPath, code, stderr)
+	}
+
+	// Atomic rename (with optional sudo for protected paths)
+	mvCmd := fmt.Sprintf("mv %s %s", shellQuote(tmpPath), shellQuote(remotePath))
+	if useSudo {
+		mvCmd = "sudo " + mvCmd
+	}
+	if _, stderr, code, err := c.Run(mvCmd); err != nil || code != 0 {
+		return fmt.Errorf("mv %s → %s (exit %d): %s", tmpPath, remotePath, code, stderr)
+	}
+	return nil
+}
+
+// Upload reads a local file and calls UploadBytes.
+func (c *Conn) Upload(localPath, remotePath string, mode fs.FileMode, useSudo bool) error {
+	data, err := os.ReadFile(localPath)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", localPath, err)
+	}
+	if mode == 0 {
+		if fi, err := os.Stat(localPath); err == nil {
+			mode = fi.Mode()
+		} else {
+			mode = 0644
+		}
+	}
+	return c.UploadBytes(data, remotePath, mode, useSudo)
+}
+
+// Download reads a remote file and returns its bytes via SFTP.
+func (c *Conn) Download(remotePath string) ([]byte, error) {
+	sc, err := sftp.NewClient(c.client)
+	if err != nil {
+		return nil, fmt.Errorf("sftp client: %w", err)
+	}
+	defer sc.Close()
+	f, err := sc.Open(remotePath)
+	if err != nil {
+		return nil, fmt.Errorf("sftp open %s: %w", remotePath, err)
+	}
+	defer f.Close()
+	return io.ReadAll(f)
+}
+
+// MD5 returns the hex MD5 of a remote file using md5sum (Linux) or md5 -q (macOS).
+func (c *Conn) MD5(remotePath string) (string, error) {
+	stdout, _, code, err := c.Run("md5sum " + shellQuote(remotePath))
+	if err != nil || code != 0 {
+		var stderr string
+		stdout, stderr, code, err = c.Run("md5 -q " + shellQuote(remotePath))
+		if err != nil || code != 0 {
+			return "", fmt.Errorf("md5 %s (exit %d): %s", remotePath, code, stderr)
+		}
+	}
+	parts := strings.Fields(strings.TrimSpace(stdout))
+	if len(parts) == 0 {
+		return "", fmt.Errorf("unexpected md5 output: %q", stdout)
+	}
+	return parts[0], nil
+}
+
+// LocalMD5 computes the hex MD5 of a local file.
+func LocalMD5(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := md5.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", h.Sum(nil)), nil
+}
+
+// Stat returns the mtime of remotePath as a time.Time.
+// Tries Linux stat -c '%Y' first, falls back to macOS stat -f '%m'.
+// Returns zero time on any error (graceful: Windows targets, stat unavailable).
+func (c *Conn) Stat(remotePath string) (time.Time, error) {
+	stdout, _, code, err := c.Run("stat -c '%Y' " + shellQuote(remotePath))
+	if err != nil || code != 0 {
+		stdout, _, code, err = c.Run("stat -f '%m' " + shellQuote(remotePath))
+		if err != nil || code != 0 {
+			return time.Time{}, nil
+		}
+	}
+	epoch, parseErr := strconv.ParseInt(strings.TrimSpace(stdout), 10, 64)
+	if parseErr != nil {
+		return time.Time{}, nil
+	}
+	return time.Unix(epoch, 0), nil
+}
+
+// Exists reports whether remotePath exists on the target.
+func (c *Conn) Exists(remotePath string) (bool, error) {
+	_, _, code, err := c.Run("test -e " + shellQuote(remotePath))
+	if err != nil {
+		return false, err
+	}
+	return code == 0, nil
+}
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}

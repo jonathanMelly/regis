@@ -1,0 +1,96 @@
+// internal/config/validate.go
+package config
+
+import "fmt"
+
+// KnownNatures is the single authoritative set of valid cue natures.
+// Add an entry here when implementing a new executor.
+var KnownNatures = map[string]bool{
+	"binary":   true,
+	"config":   true,
+	"secret":   true,
+	"action":   true,
+	"generate": true,
+	"render":   true,
+	"pack":     true,
+	"service":  true,
+}
+
+// Validate checks the config for semantic errors and applies nature inference.
+// Returns all errors found; callers typically act on the first.
+func Validate(c *Config) []error {
+	var errs []error
+	add := func(format string, args ...any) {
+		errs = append(errs, fmt.Errorf(format, args...))
+	}
+
+	if len(c.Targets) == 0 {
+		add("config must define at least one target")
+	}
+	for _, t := range c.Targets {
+		if t.Name == "" {
+			add("target missing 'name'")
+		}
+		if t.Host == "" {
+			add("target %q missing 'host'", t.Name)
+		}
+		if t.User == "" {
+			add("target %q missing 'user'", t.Name)
+		}
+		if t.Dir == "" {
+			add("target %q missing 'dir'", t.Name)
+		}
+	}
+
+	for scName, sc := range c.Scenarios {
+		for _, req := range sc.Requires {
+			if _, ok := c.Scenarios[req]; !ok {
+				add("scenario %q requires %q which is not defined", scName, req)
+			}
+		}
+		updated := sc
+		for i, cr := range sc.Cues {
+			if cr.ScenarioRef != "" {
+				continue // references validated when resolved at runtime
+			}
+			if cr.Name == "" {
+				add("scenario %q: cue at index %d missing 'name'", scName, i)
+				continue
+			}
+			nature, err := inferNature(cr)
+			if err != nil {
+				add("scenario %q cue %q: %v", scName, cr.Name, err)
+				continue
+			}
+			updated.Cues[i].Nature = nature
+		}
+		c.Scenarios[scName] = updated
+	}
+	return errs
+}
+
+func inferNature(c CueRef) (string, error) {
+	if c.Nature != "" {
+		if !KnownNatures[c.Nature] {
+			return "", fmt.Errorf("unknown nature %q", c.Nature)
+		}
+		return c.Nature, nil
+	}
+	hasSrc := len(c.Src) > 0
+	hasShell := c.Shell != ""
+	hasDest := c.Dest != ""
+	hasPreserve := len(c.Preserve) > 0
+
+	switch {
+	case hasShell && !hasSrc && hasDest:
+		return "render", nil
+	case hasShell && !hasSrc:
+		return "action", nil
+	case hasSrc && hasPreserve:
+		return "secret", nil
+	case hasSrc && !hasPreserve:
+		return "", fmt.Errorf("cannot infer nature from src+dest alone — specify nature: binary or nature: config explicitly")
+	default:
+		return "", fmt.Errorf("cannot determine nature — specify nature: binary, config, secret, or action")
+	}
+}

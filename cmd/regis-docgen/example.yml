@@ -1,0 +1,43 @@
+# Minimal regis.yml example
+targets:
+  - name: prod
+    host: ${NODE_HOST}
+    user: ${NODE_USER}
+    dir: /opt/app
+
+scenarios:
+  build:
+    describe: Build local artifacts
+    cues:
+      - name: bins
+        nature: action
+        local: true
+        cmd: go build -o bin/app ./cmd/app
+        env: { GOOS: linux, GOARCH: amd64, CGO_ENABLED: "0" }
+
+  deploy:
+    describe: Deploy binary and config
+    requires: [build]
+    post: restart:app      # fires once if env or bin changed — even if only one of them did
+    cues:
+      - name: bin
+        nature: binary
+        src: bin/app
+        dest: app
+      - name: env
+        nature: secret
+        src: .env.server
+        dest: .env
+        preserve: [DB_PASSWORD, SECRET_KEY]
+        mode: "600"
+
+  full:
+    describe: Full deployment
+    cues:
+      - { scenario: deploy }
+
+services:
+  - name: app
+    manager: crontab
+    binary: app
+    health: curl -sf http://localhost:8080/health
