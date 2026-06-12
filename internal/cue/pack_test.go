@@ -459,6 +459,51 @@ func TestPackExecutor_gitTrue_showsCommitHash_changed(t *testing.T) {
 	}
 }
 
+// TestPackExecutor_equalPopulatesArtifactPaths guards the fix: ArtifactPaths and
+// LocalArtifacts must be populated even when StatusEqual so that --force-manifest
+// can record the pack cue into the release manifest without a re-deploy.
+func TestPackExecutor_equalPopulatesArtifactPaths(t *testing.T) {
+	dir := t.TempDir()
+	content := []byte("hello")
+	os.WriteFile(dir+"/a.txt", content, 0644)
+	os.WriteFile(dir+"/b.txt", content, 0644)
+
+	mock := &mockConn{
+		runFunc: packEqualRun(map[string][]byte{
+			"/www/a.txt": content,
+			"/www/b.txt": content,
+		}),
+	}
+	ex := cue.NewPackExecutor(mock)
+	cr := config.CueRef{
+		Name:   "web",
+		Nature: "pack",
+		Src:    config.StringOrList{dir + "/*.txt"},
+		Dest:   "/www",
+	}
+	r, err := ex.Execute(context.Background(), nil, cr, config.Target{Dir: "/opt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Status != cue.StatusEqual {
+		t.Fatalf("expected StatusEqual, got %v", r.Status)
+	}
+	if len(r.ArtifactPaths) == 0 {
+		t.Error("ArtifactPaths must be populated even when StatusEqual")
+	}
+	if len(r.LocalArtifacts) == 0 {
+		t.Error("LocalArtifacts must be populated even when StatusEqual")
+	}
+	for key, localPath := range r.LocalArtifacts {
+		if _, ok := r.ArtifactPaths[key]; !ok {
+			t.Errorf("LocalArtifacts key %q missing from ArtifactPaths", key)
+		}
+		if localPath == "" {
+			t.Errorf("LocalArtifacts[%q] is empty", key)
+		}
+	}
+}
+
 func TestPackExecutor_gitTrue_showsCommitHash_equal(t *testing.T) {
 	dir := initGitRepo(t, map[string]string{"index.html": "content"})
 	chdirTemp(t, dir)

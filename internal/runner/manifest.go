@@ -216,6 +216,30 @@ func NewReleaseID() string {
 	return ts
 }
 
+// archiveRunner is the subset of an SSH connection needed to run remote commands.
+type archiveRunner interface {
+	Run(cmd string) (stdout, stderr string, exitCode int, err error)
+}
+
+// ArchiveRelease copies targetDir to releaseDir/releaseID/ on the remote, excluding
+// the release dir itself to avoid "copy into itself" when releaseDir is inside targetDir.
+// Returns a non-nil error only when the connection call itself fails; a non-zero exit code
+// is returned as an error with the stderr text included.
+func ArchiveRelease(conn archiveRunner, targetDir, releaseDir, releaseID string) error {
+	releaseDirBase := path.Base(releaseDir)
+	cmd := fmt.Sprintf(
+		"mkdir -p %s/%s && find %s -mindepth 1 -maxdepth 1 ! -name %s -exec cp -rp {} %s/%s/ \\;",
+		releaseDir, releaseID, targetDir, releaseDirBase, releaseDir, releaseID)
+	_, stderr, code, err := conn.Run(cmd)
+	if err != nil {
+		return err
+	}
+	if code != 0 {
+		return fmt.Errorf("archive failed (exit %d): %s", code, stderr)
+	}
+	return nil
+}
+
 // SnapshotRelease writes a local release snapshot to releaseDir/releaseID/.
 // Copies the source file for each binary/config/secret/render step, plus the manifest YAML.
 // Render folder mode: files are stored with composite key "cueName/relpath".

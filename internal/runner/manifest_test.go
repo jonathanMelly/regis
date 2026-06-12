@@ -403,3 +403,41 @@ func TestBuildManifest_forceManifest_changedTakesPrecedenceOverEqual(t *testing.
 		t.Errorf("force-manifest: StatusChanged hash must not be overwritten by includeEqual pass; got %q", m.Hashes["cfg"])
 	}
 }
+
+// TestArchiveRelease guards the fix: the archive command must use find(1) to copy
+// top-level entries individually, excluding the release dir by name, so it never
+// tries to copy a directory into itself when releaseDir is inside targetDir.
+func TestArchiveRelease(t *testing.T) {
+	var capturedCmd string
+	mock := &mockArchiveConn{runFn: func(cmd string) (string, string, int, error) {
+		capturedCmd = cmd
+		return "", "", 0, nil
+	}}
+
+	err := runner.ArchiveRelease(mock, "/srv/app", "/srv/app/.regis-releases", "v20260101-120000")
+	if err != nil {
+		t.Fatalf("ArchiveRelease returned error: %v", err)
+	}
+
+	// Must use find, not plain "cp -rp targetDir/."
+	if strings.Contains(capturedCmd, "cp -rp /srv/app/.") {
+		t.Error("archive command must not use 'cp -rp targetDir/.' — it copies the release dir into itself")
+	}
+	if !strings.Contains(capturedCmd, "find") {
+		t.Error("archive command must use find to enumerate top-level entries")
+	}
+	// Must exclude the release dir base name (.regis-releases).
+	if !strings.Contains(capturedCmd, ".regis-releases") || !strings.Contains(capturedCmd, "! -name") {
+		t.Error("archive command must exclude release dir base name via ! -name")
+	}
+	// Destination must include the release ID.
+	if !strings.Contains(capturedCmd, "v20260101-120000") {
+		t.Error("archive command must include release ID in destination path")
+	}
+}
+
+type mockArchiveConn struct {
+	runFn func(cmd string) (string, string, int, error)
+}
+
+func (m *mockArchiveConn) Run(cmd string) (string, string, int, error) { return m.runFn(cmd) }

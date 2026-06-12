@@ -332,9 +332,7 @@ func Run(ctx context.Context, cfg *config.Config, scenarioNames []string, target
 			if releaseDir == "" {
 				releaseDir = path.Join(target.Dir, ".regis-releases")
 			}
-			archiveCmd := fmt.Sprintf("mkdir -p %s && cp -rp %s/. %s/%s/",
-				releaseDir, target.Dir, releaseDir, releaseID)
-			_, _, _, _ = conn.Run(archiveCmd)
+			_ = ArchiveRelease(conn, target.Dir, releaseDir, releaseID)
 			// Prune old releases if requested.
 			if opts.PruneReleases {
 				keep := cfg.Release.Keep

@@ -365,6 +365,19 @@ func (e *PackExecutor) Execute(ctx context.Context, conn SSHConn, cr config.CueR
 		r.FileTotal = len(localRelPaths)
 		r.FileChanged = 0
 		r.Elapsed = time.Since(start)
+		// Populate artifact paths even when unchanged so --force-manifest can record
+		// this cue's files into the release manifest without a re-deploy.
+		r.ArtifactPaths = make(map[string]string, len(srcs))
+		r.LocalArtifacts = make(map[string]string, len(srcs))
+		for _, sf := range srcs {
+			rel := remoteRelPath(sf.path, sf.pattern)
+			if strings.HasPrefix(rel, ".regis-pack-") {
+				continue
+			}
+			key := cr.Name + "/" + rel
+			r.LocalArtifacts[key] = sf.path
+			r.ArtifactPaths[key] = remoteDest + sep + strings.ReplaceAll(rel, "/", sep)
+		}
 		return r, nil
 	}
 

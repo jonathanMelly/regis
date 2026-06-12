@@ -34,18 +34,42 @@ func newReleaseCommand(gf *GlobalFlags) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return withConn(gf, func(conn *regssh.Conn, tgt config.Target, cfg *config.Config) error {
 				relDir := resolveReleaseDir(cfg, tgt)
+				localDir := effectiveLocalDir(cfg)
+
 				stdout, _, _, err := conn.Run(fmt.Sprintf(
 					"cd %s && ls -dt v* 2>/dev/null || true", relDir,
 				))
 				if err != nil {
 					return err
 				}
-				lines := strings.TrimSpace(stdout)
-				if lines == "" {
-					fmt.Println("no releases yet — run 'regis run' to create one")
+				remoteIDs := strings.Fields(strings.TrimSpace(stdout))
+
+				localCount := 0
+				if entries, readErr := os.ReadDir(localDir); readErr == nil {
+					for _, e := range entries {
+						if e.IsDir() {
+							localCount++
+						}
+					}
+				}
+
+				fmt.Printf("releases  %s\n", tgt.Name)
+				fmt.Printf("  remote  %s:%s\n", tgt.Host, relDir)
+				fmt.Printf("  local   %s\n", localDir)
+				fmt.Println()
+				if len(remoteIDs) == 0 {
+					fmt.Println("  no remote releases yet — run 'regis run' to create one")
 					return nil
 				}
-				fmt.Println(lines)
+				for _, id := range remoteIDs {
+					fmt.Printf("  %s\n", id)
+				}
+				fmt.Println()
+				summary := fmt.Sprintf("%d remote", len(remoteIDs))
+				if localCount > 0 {
+					summary += fmt.Sprintf(" · %d local", localCount)
+				}
+				fmt.Println(summary)
 				return nil
 			})
 		},
@@ -188,7 +212,9 @@ func newReleaseCommand(gf *GlobalFlags) *cobra.Command {
 				}
 				sort.Sort(sort.Reverse(sort.StringSlice(keys)))
 
-				fmt.Printf("status  %s  (local: %s)\n", tgt.Name, localDir)
+				fmt.Printf("releases  %s\n", tgt.Name)
+				fmt.Printf("  remote  %s:%s  (%d)\n", tgt.Host, relDir, len(remoteSet))
+				fmt.Printf("  local   %s  (%d)\n", localDir, len(localSet))
 				fmt.Println(strings.Repeat("─", 60))
 
 				var bothOK, bothDiff, remoteOnly, localOnly int
@@ -196,18 +222,18 @@ func newReleaseCommand(gf *GlobalFlags) *cobra.Command {
 					r, l := remoteSet[id], localSet[id]
 					switch {
 					case r && !l:
-						fmt.Printf("  R  %s\n", id)
+						fmt.Printf("  remote-only  %s\n", id)
 						remoteOnly++
 					case !r && l:
-						fmt.Printf("  L  %s\n", id)
+						fmt.Printf("  local-only   %s\n", id)
 						localOnly++
 					default:
 						pf := releasePreflight(conn, id, relDir, localDir)
 						if pf.diverged {
-							fmt.Printf("  !  %s  (%s)\n", id, pf.reason)
+							fmt.Printf("  mismatch     %s  (%s)\n", id, pf.reason)
 							bothDiff++
 						} else {
-							fmt.Printf("  =  %s\n", id)
+							fmt.Printf("  in-sync      %s\n", id)
 							bothOK++
 						}
 					}
@@ -621,10 +647,8 @@ Flags:
 						fmt.Printf("snapshot  %s/%s\n", localDir, releaseID)
 
 						relDir := resolveReleaseDir(cfg, tgt)
-						archiveCmd := fmt.Sprintf("mkdir -p %s && cp -rp %s/. %s/%s/",
-							relDir, tgt.Dir, relDir, releaseID)
-						if _, stderr, code, archErr := conn.Run(archiveCmd); archErr != nil || code != 0 {
-							fmt.Fprintf(os.Stderr, "warn: archive failed (exit %d): %s\n", code, stderr)
+						if archErr := runner.ArchiveRelease(conn, tgt.Dir, relDir, releaseID); archErr != nil {
+							fmt.Fprintf(os.Stderr, "warn: %s\n", archErr)
 						} else {
 							fmt.Printf("archive   %s/%s\n", relDir, releaseID)
 						}
