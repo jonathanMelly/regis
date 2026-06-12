@@ -142,6 +142,135 @@ func TestBinaryExecutor_fallback_unchanged(t *testing.T) {
 	}
 }
 
+// TestBinaryExecutor_updateMtime_prefetch covers the bulk-prefetch hash-equal branch:
+// touch must fire on a real run and on dry-run+WithUpdateMtime, but not on plain dry-run.
+func TestBinaryExecutor_updateMtime_prefetch(t *testing.T) {
+	dir := t.TempDir()
+	localPath := dir + "/saver"
+	os.WriteFile(localPath, []byte("binary content"), 0755)
+	fi, _ := os.Stat(localPath)
+	localHash, _ := cue.LocalHash(localPath)
+
+	// Remote mtime differs from local so the prefetch path has a hash pre-computed.
+	stats := map[string]cue.RemoteStat{
+		"/opt/app/saver": {Mtime: time.Unix(1, 0), Size: fi.Size(), Hash: localHash},
+	}
+	cr := config.CueRef{Name: "bin", Nature: "binary", Src: config.StringOrList{localPath}, Dest: "/opt/app/saver"}
+	tgt := config.Target{Dir: "/opt/app"}
+
+	cases := []struct {
+		name      string
+		ctx       context.Context
+		wantTouch bool
+	}{
+		{
+			name:      "real run — touch expected",
+			ctx:       cue.WithRemoteStats(context.Background(), stats),
+			wantTouch: true,
+		},
+		{
+			name:      "dry-run without --update-mtime — no touch",
+			ctx:       cue.WithRemoteStats(cue.WithDryRun(context.Background()), stats),
+			wantTouch: false,
+		},
+		{
+			name:      "dry-run with --update-mtime — touch expected",
+			ctx:       cue.WithRemoteStats(cue.WithUpdateMtime(cue.WithDryRun(context.Background())), stats),
+			wantTouch: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var touchCalled bool
+			mock := &mockConn{runFunc: func(cmd string) (string, string, int, error) {
+				if strings.Contains(cmd, "touch") {
+					touchCalled = true
+				}
+				return "", "", 0, nil
+			}}
+			ex := cue.NewBinaryExecutor(mock)
+			result, err := ex.Execute(tc.ctx, nil, cr, tgt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Status != cue.StatusEqual {
+				t.Fatalf("want StatusEqual, got %v", result.Status)
+			}
+			if touchCalled != tc.wantTouch {
+				t.Errorf("touchCalled=%v, want %v", touchCalled, tc.wantTouch)
+			}
+		})
+	}
+}
+
+// TestBinaryExecutor_updateMtime_fallback covers the individual-SSH hash-equal branch:
+// stat returns mismatched mtime/size → triggers hash → hash matches.
+// Same touch expectations as the prefetch path.
+func TestBinaryExecutor_updateMtime_fallback(t *testing.T) {
+	dir := t.TempDir()
+	localPath := dir + "/saver"
+	os.WriteFile(localPath, []byte("binary content"), 0755)
+	localHash, _ := cue.LocalHash(localPath)
+
+	cr := config.CueRef{Name: "bin", Nature: "binary", Src: config.StringOrList{localPath}, Dest: "/opt/app/saver"}
+	tgt := config.Target{Dir: "/opt/app"}
+
+	makeConn := func(touchCalled *bool) *mockConn {
+		return &mockConn{runFunc: func(cmd string) (string, string, int, error) {
+			if strings.Contains(cmd, "stat -c") || strings.Contains(cmd, "stat -f") {
+				return "1 1", "", 0, nil // mtime/size differ → triggers hash
+			}
+			if strings.Contains(cmd, "md5sum") || strings.Contains(cmd, "md5 -q") {
+				return localHash + "  /opt/app/saver", "", 0, nil
+			}
+			if strings.Contains(cmd, "touch") {
+				*touchCalled = true
+			}
+			return "", "", 0, nil
+		}}
+	}
+
+	cases := []struct {
+		name      string
+		buildCtx  func() context.Context
+		wantTouch bool
+	}{
+		{
+			name:      "real run — touch expected",
+			buildCtx:  func() context.Context { return context.Background() },
+			wantTouch: true,
+		},
+		{
+			name:      "dry-run without --update-mtime — no touch",
+			buildCtx:  func() context.Context { return cue.WithDryRun(context.Background()) },
+			wantTouch: false,
+		},
+		{
+			name:      "dry-run with --update-mtime — touch expected",
+			buildCtx:  func() context.Context { return cue.WithUpdateMtime(cue.WithDryRun(context.Background())) },
+			wantTouch: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var touchCalled bool
+			ex := cue.NewBinaryExecutor(makeConn(&touchCalled))
+			result, err := ex.Execute(tc.buildCtx(), nil, cr, tgt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Status != cue.StatusEqual {
+				t.Fatalf("want StatusEqual, got %v", result.Status)
+			}
+			if touchCalled != tc.wantTouch {
+				t.Errorf("touchCalled=%v, want %v", touchCalled, tc.wantTouch)
+			}
+		})
+	}
+}
+
 // TestBinaryExecutor_noConn is a non-regression test for the rdiff nil-conn panic.
 func TestBinaryExecutor_noConn(t *testing.T) {
 	dir := t.TempDir()

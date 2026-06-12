@@ -40,6 +40,7 @@ func rdiffLiveSymbol(r cue.Result) string {
 
 func newRdiffCommand(gf *GlobalFlags) *cobra.Command {
 	var noDiff bool
+	var updateMtime bool
 	cmd := &cobra.Command{
 		Use:     "rdiff [scenario-or-cue,...]",
 		Aliases: []string{"status"},
@@ -153,6 +154,9 @@ Optional filter: comma-separated scenario or cue names to check a subset.
 
 				ctx = populateRemoteFiles(ctx, conn, tgt.Dir)
 				ctx = cue.WithLocalDir(ctx, cfg.BaseDir)
+				if updateMtime {
+					ctx = cue.WithUpdateMtime(ctx)
+				}
 
 				spinner.Stop()
 
@@ -288,5 +292,6 @@ Optional filter: comma-separated scenario or cue names to check a subset.
 		},
 	}
 	cmd.Flags().BoolVar(&noDiff, "no-diff", false, "suppress text diffs in output")
+	cmd.Flags().BoolVar(&updateMtime, "update-mtime", false, "when hash matches, update remote mtime so next rdiff uses the fast mtime/size path")
 	return cmd
 }

@@ -93,6 +93,10 @@ func (e *BinaryExecutor) Execute(ctx context.Context, _ SSHConn, cr config.CueRe
 				return r, nil
 			}
 			if rs.Hash == localHash {
+				if (!IsDryRun(ctx) || IsUpdateMtime(ctx)) && !localMtime.IsZero() {
+					// Sync remote mtime so the next rdiff/run can skip the hash check via the fast mtime+size path.
+					SetRemoteMtime(e.conn, remotePath, localMtime)
+				}
 				r.Status = StatusEqual
 				r.Elapsed = time.Since(start)
 				return r, nil
@@ -134,6 +138,10 @@ func (e *BinaryExecutor) Execute(ctx context.Context, _ SSHConn, cr config.CueRe
 	if !fileKnownMissing {
 		remoteHash, err = HashRemote(e.conn, remotePath)
 		if err == nil && localHash == remoteHash {
+			if (!IsDryRun(ctx) || IsUpdateMtime(ctx)) && !localMtime.IsZero() {
+				// Sync remote mtime so the next rdiff/run can skip the hash check via the fast mtime+size path.
+				SetRemoteMtime(e.conn, remotePath, localMtime)
+			}
 			r.Status = StatusEqual
 			r.Elapsed = time.Since(start)
 			return r, nil
