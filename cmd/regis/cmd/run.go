@@ -16,7 +16,7 @@ import (
 	"git.disroot.org/jmy/regis/internal/output"
 	"git.disroot.org/jmy/regis/internal/runner"
 	"git.disroot.org/jmy/regis/internal/score"
-	regssh "git.disroot.org/jmy/regis/internal/ssh"
+	"git.disroot.org/jmy/regis/internal/tui"
 )
 
 var reservedNames = map[string]bool{
@@ -195,30 +195,16 @@ func newRunCommand(gf *GlobalFlags) *cobra.Command {
 				}
 
 				output.PrintOpeningQuote(level)
-				if gf.Debug {
-					port := "22"
-					if tgt.Port != "" {
-						port = tgt.Port
-					}
-					fmt.Fprintf(os.Stderr, "[debug] dialing %s@%s:%s\n", tgt.User, tgt.Host, port)
-				}
 				spinner := output.NewSpinner(level, fmt.Sprintf("connecting to %s...", tgtName))
 				spinner.Start()
 
-				rawConn, dialErr := regssh.Dial(tgt)
-				if dialErr != nil {
-					fmt.Fprintf(os.Stderr, "warn: SSH connect to %s failed: %v\n", tgtName, dialErr)
+				rawConn, conn, connErr := connectTarget(gf, &tgt, spinner)
+				if connErr != nil {
+					fmt.Fprintln(os.Stderr, connErr)
+					spinner.Stop()
+					os.Exit(1)
 				}
-				var conn cue.SSHConn
-				if rawConn != nil {
-					if expanded, err := rawConn.ExpandHome(tgt.Dir); err != nil {
-						fmt.Fprintf(os.Stderr, "FAILED  %s: %v\n", tgtName, err)
-						spinner.Stop()
-						os.Exit(1)
-					} else {
-						tgt.Dir = expanded
-					}
-					conn = WrapDebug(rawConn, gf.Debug)
+				if conn != nil {
 					spinner.Update(fmt.Sprintf("checking %s...", tgtName))
 				}
 
@@ -290,56 +276,42 @@ func newRunCommand(gf *GlobalFlags) *cobra.Command {
 					spinner.Start()
 				}
 
-				env, _ := config.BuildEnvForTarget(cfg, &tgt)
-				dispatch := runner.Dispatch{
-					BulkConn: conn,
-					Binary:   cue.NewBinaryExecutor(conn),
-					Config:   cue.NewConfigExecutor(conn, env),
-					Secret:   cue.NewSecretExecutor(conn),
-					Action:   cue.NewActionExecutor(conn),
-					Generate: cue.NewGenerateExecutor(),
-					Render:   cue.NewRenderExecutor(conn),
-					Pack:     cue.NewPackExecutor(conn).WithReleaseDir(cfg.Release.Dir, gf.Yes),
-					Service:  cue.NewServiceExecutor(conn, env),
-				}
+				dispatch := buildDispatch(conn, cfg, &tgt, gf, true)
+				baseCtx, minfo := buildBaseCtx(gf, conn, tgt, cfg)
 
-				ctx := populateRemoteFiles(context.Background(), conn, tgt.Dir)
-				ctx = cue.WithLocalDir(ctx, cfg.BaseDir)
-				if gf.Debug {
-					ctx = cue.WithDebugWriter(ctx, os.Stderr)
-				}
-				ctx = cue.WithCueProgress(ctx, func(checked, total int) {
-					spinner.Update(fmt.Sprintf("checking %s... %d/%d", tgtName, checked, total))
-				})
-				ctx = cue.WithPreStep(ctx, func(scenario, cueName, desc string) {
-					label := desc
-					if label == "" {
-						label = scenario
-					}
-					spinner.Update(fmt.Sprintf("deploying %s... %s / %s", tgtName, label, cueName))
-				})
-				ctx = cue.WithFileProgress(ctx, func(cueName string, scanned, total int) {
-					spinner.Update(fmt.Sprintf("deploying %s... %s  %d/%d", tgtName, cueName, scanned, total))
-				})
-				spinner.Update(fmt.Sprintf("deploying %s...", tgtName))
-
-				onResult := func(r cue.Result) {
-					if level < output.Level2 {
-						fmt.Printf("[%s] %-24s %s\n", tgtName, r.CueName, r.Status.Applied())
-					}
-				}
-
-				result, err := runner.Run(ctx, cfg, scenarioNames, tgt,
-					runner.Options{
+				runOpts := runner.Options{
 					DryRun:        gf.DryRun,
 					SkipConfirm:   gf.Yes,
 					NatureFilter:  ParseNatureFilter(nature),
 					PruneReleases: pruneReleases,
 					ForceManifest: forceManifest,
 					ScopedCues:    scopedCues,
-				},
-					dispatch, onResult)
+				}
+
+				// Level2: live TUI with browse after deploy.
+				if level >= output.Level2 {
+					spinner.Stop()
+					tuiErr := tui.RunLiveTUI(baseCtx, tgtName, true, gf.Verbose, level, minfo,
+						func(liveCtx context.Context) ([]cue.Result, time.Duration, error) {
+							res, runErr := runner.Run(liveCtx, cfg, scenarioNames, tgt, runOpts, dispatch, func(cue.Result) {})
+							if res == nil {
+								return nil, 0, runErr
+							}
+							return res.Results, res.Elapsed, runErr
+						},
+					)
+					if rawConn != nil {
+						rawConn.Close()
+					}
+					if tuiErr != nil {
+						fmt.Fprintf(os.Stderr, "run tui: %v\n", tuiErr)
+					}
+					continue
+				}
+
+				// Level1: plain text — run silently, print expand-all tree.
 				spinner.Stop()
+				result, err := runner.Run(baseCtx, cfg, scenarioNames, tgt, runOpts, dispatch, func(cue.Result) {})
 				if rawConn != nil {
 					rawConn.Close()
 				}
@@ -348,11 +320,7 @@ func newRunCommand(gf *GlobalFlags) *cobra.Command {
 					os.Exit(1)
 				}
 				if result != nil {
-					if level >= output.Level2 {
-						fmt.Print(output.RenderTable(result.Results, tgtName, result.Elapsed, true, level, gf.Verbose))
-					} else {
-						fmt.Print(output.RenderPlain(result.Results, tgtName, result.Elapsed, true))
-					}
+					fmt.Print(output.RenderTree(result.Results, tgtName, result.Elapsed, true, gf.Verbose, level, minfo))
 				}
 			}
 			return nil

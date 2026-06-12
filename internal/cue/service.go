@@ -45,7 +45,7 @@ func NewServiceExecutor(conn SSHConn, env ...map[string]string) *ServiceExecutor
 // Execute checks service file diff and enabled state, uploads if needed, queues deploy post-action.
 func (e *ServiceExecutor) Execute(ctx context.Context, _ SSHConn, cr config.CueRef, target config.Target) (Result, error) {
 	start := time.Now()
-	r := Result{CueName: cr.Name, Nature: "service", AffectsRelease: false}
+	r := Result{CueName: cr.Name, Nature: "service", AffectsRelease: false, Cmd: fmt.Sprintf("/etc/systemd/system/%s.service", cr.Name)}
 
 	// Check 1: service unit file diff (systemd, when service_file is set)
 	fileChanged, diff, rendered, err := e.checkServiceFile(cr, target)

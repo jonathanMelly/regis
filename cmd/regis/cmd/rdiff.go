@@ -6,37 +6,17 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v3"
 	"git.disroot.org/jmy/regis/internal/config"
 	"git.disroot.org/jmy/regis/internal/cue"
 	"git.disroot.org/jmy/regis/internal/output"
 	"git.disroot.org/jmy/regis/internal/runner"
 	"git.disroot.org/jmy/regis/internal/score"
-	regssh "git.disroot.org/jmy/regis/internal/ssh"
 	"git.disroot.org/jmy/regis/internal/tui"
 )
 
-// rdiffLiveSymbol returns a single-character status indicator for a live check line.
-func rdiffLiveSymbol(r cue.Result) string {
-	switch r.Status {
-	case cue.StatusEqual:
-		return "="
-	case cue.StatusChanged:
-		return "~"
-	case cue.StatusFailed:
-		return "!"
-	case cue.StatusSkipped:
-		if r.Nature == "action" || r.Nature == "service" {
-			return "@" // would run in a real deploy; no diff in dry-run
-		}
-		return "-" // genuinely skipped (if: condition false)
-	}
-	return "?"
-}
 
 func newRdiffCommand(gf *GlobalFlags) *cobra.Command {
 	var noDiff bool
@@ -101,77 +81,27 @@ Optional filter: comma-separated scenario or cue names to check a subset.
 					}
 				}
 
-				if gf.Debug {
-					port := "22"
-					if tgt.Port != "" {
-						port = tgt.Port
-					}
-					fmt.Fprintf(os.Stderr, "[debug] dialing %s@%s:%s\n", tgt.User, tgt.Host, port)
-				}
 				spinner := output.NewSpinner(level, fmt.Sprintf("connecting to %s...", tgtName))
 				spinner.Start()
 
-				rawConn, dialErr := regssh.Dial(tgt)
-				if dialErr != nil {
-					fmt.Fprintf(os.Stderr, "warn: SSH connect to %s failed: %v\n", tgtName, dialErr)
+				rawConn, conn, connErr := connectTarget(gf, &tgt, spinner)
+				if connErr != nil {
+					fmt.Fprintln(os.Stderr, connErr)
+					spinner.Stop()
+					os.Exit(1)
 				}
-				var conn cue.SSHConn
-				if rawConn != nil {
-					if expanded, err := rawConn.ExpandHome(tgt.Dir); err != nil {
-						fmt.Fprintf(os.Stderr, "FAILED  %s: %v\n", tgtName, err)
-						spinner.Stop()
-						os.Exit(1)
-					} else {
-						tgt.Dir = expanded
-					}
-					conn = WrapDebug(rawConn, gf.Debug)
+				if conn != nil {
 					spinner.Update(fmt.Sprintf("checking %s...", tgtName))
 				}
 
-				// Download and parse the release manifest for drift detection.
-				ctx := context.Background()
-				if gf.Debug {
-					ctx = cue.WithDebugWriter(ctx, os.Stderr)
-				}
-				var minfo *output.ManifestInfo
-				if conn != nil {
-					if data, dlErr := conn.Download(tgt.Dir + "/.regis-release"); dlErr == nil {
-						var m runner.ReleaseManifest
-						if parseErr := yaml.Unmarshal(data, &m); parseErr == nil {
-							minfo = &output.ManifestInfo{
-								Release:    m.Release,
-								DeployedAt: m.DeployedAt,
-								DeployedBy: m.DeployedBy,
-							}
-							ctx = cue.WithManifest(ctx, &cue.Manifest{
-								Release:    m.Release,
-								DeployedBy: m.DeployedBy,
-								Hashes:  m.Hashes,
-							})
-						}
-					}
-				}
-
-				ctx = populateRemoteFiles(ctx, conn, tgt.Dir)
-				ctx = cue.WithLocalDir(ctx, cfg.BaseDir)
+				ctx, minfo := buildBaseCtx(gf, conn, tgt, cfg)
 				if updateMtime {
 					ctx = cue.WithUpdateMtime(ctx)
 				}
 
 				spinner.Stop()
 
-				env, _ := config.BuildEnvForTarget(cfg, &tgt)
-				dispatch := runner.Dispatch{
-					BulkConn: conn,
-					Binary:   cue.NewBinaryExecutor(conn),
-					Config:   cue.NewConfigExecutor(conn, env),
-					Secret:   cue.NewSecretExecutor(conn),
-					Action:   cue.NewActionExecutor(conn),
-					Generate: cue.NewGenerateExecutor(),
-					Render:   cue.NewRenderExecutor(conn),
-					Pack:     cue.NewPackExecutor(conn),
-					Service:  cue.NewServiceExecutor(conn, env),
-				}
+				dispatch := buildDispatch(conn, cfg, &tgt, gf, false)
 				allScenarios := score.SortedScenarioNames(cfg, "yaml")
 				opts := runner.Options{
 					DryRun:           true,
@@ -180,9 +110,9 @@ Optional filter: comma-separated scenario or cue names to check a subset.
 					CueFilter:        cueFilter,
 				}
 
-				// Level3: live TUI — checks and browse are one unified phase.
-				if level >= output.Level3 {
-					tuiErr := tui.RunLiveRdiffTUI(ctx, tgtName, gf.Verbose, level, minfo,
+				// Level2: live TUI with browse after check.
+				if level >= output.Level2 {
+					tuiErr := tui.RunLiveTUI(ctx, tgtName, false, gf.Verbose, level, minfo,
 						func(liveCtx context.Context) ([]cue.Result, time.Duration, error) {
 							res, runErr := runner.Run(liveCtx, cfg, allScenarios, tgt, opts, dispatch, func(cue.Result) {})
 							if res == nil {
@@ -200,93 +130,16 @@ Optional filter: comma-separated scenario or cue names to check a subset.
 					continue
 				}
 
-				// Level2: print text lines during check, then static tree.
-				if level >= output.Level2 {
-					fmt.Printf("checking %s\n", tgtName)
-				} else {
-					fmt.Fprintf(os.Stderr, "checking the marks — %s…\n", tgtName)
-				}
-
-				var (
-					liveMu      sync.Mutex
-					liveN       int
-					liveTotal   int
-					skippedCues []string
-				)
-				ctx = cue.WithPrePhase(ctx, func(steps []cue.StepInfo) {
-					if level < output.Level2 {
-						return
-					}
-					liveMu.Lock()
-					for _, s := range steps {
-						label := s.ScenarioDesc
-						if label == "" {
-							label = s.ScenarioName
-						}
-						fmt.Printf("  ·  %s > %s\n", label, s.Name)
-					}
-					liveMu.Unlock()
-				})
-				ctx = cue.WithCheckResult(ctx, func(r cue.Result) {
-					if level < output.Level2 {
-						return
-					}
-					liveMu.Lock()
-					liveN++
-					n, tot := liveN, liveTotal
-					// Skipped actions are collected and printed as one summary line later.
-					if r.Status == cue.StatusSkipped && (r.Nature == "action" || r.Nature == "service") {
-						skippedCues = append(skippedCues, r.CueName)
-						liveMu.Unlock()
-						return
-					}
-					liveMu.Unlock()
-					label := r.ScenarioDesc
-					if label == "" {
-						label = r.ScenarioName
-					}
-					sym := rdiffLiveSymbol(r)
-					line := fmt.Sprintf("  %s  %s > %s", sym, label, r.CueName)
-					if r.FileTotal > 0 {
-						line += fmt.Sprintf(" (%d/%d)", r.FileChanged, r.FileTotal)
-					}
-					if tot > 0 {
-						line += fmt.Sprintf("  [cue %d/%d]", n, tot)
-					} else {
-						line += fmt.Sprintf("  [cue %d]", n)
-					}
-					fmt.Println(line)
-				})
-				ctx = cue.WithCueProgress(ctx, func(_, total int) {
-					liveMu.Lock()
-					liveTotal = total
-					liveMu.Unlock()
-				})
-
-				result, err := runner.Run(ctx, cfg, allScenarios, tgt, opts, dispatch,
-					func(r cue.Result) {
-						if level < output.Level2 {
-							fmt.Printf("%-24s %s\n", r.CueName, r.Status.String())
-						}
-					},
-				)
+				// Level1: plain text — run silently, print expand-all tree.
+				result, err := runner.Run(ctx, cfg, allScenarios, tgt, opts, dispatch, func(cue.Result) {})
 				if rawConn != nil {
 					rawConn.Close()
-				}
-				// Print the skipped-action summary after all checks complete.
-				if level >= output.Level2 && len(skippedCues) > 0 {
-					fmt.Printf("  ·  skipped: %s\n", strings.Join(skippedCues, ", "))
 				}
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "rdiff %s: %v\n", tgtName, err)
 				}
 				if result != nil {
-					switch {
-					case level >= output.Level2:
-						fmt.Print(output.RenderTree(result.Results, tgtName, result.Elapsed, showDiff, gf.Verbose, level, minfo))
-					default:
-						fmt.Print(output.RenderPlain(result.Results, tgtName, result.Elapsed, false))
-					}
+					fmt.Print(output.RenderTree(result.Results, tgtName, result.Elapsed, showDiff, gf.Verbose, level, minfo))
 				}
 			}
 			return nil

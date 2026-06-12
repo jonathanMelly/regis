@@ -30,6 +30,7 @@ func (e *ActionExecutor) Execute(ctx context.Context, _ SSHConn, cr config.CueRe
 		Nature:         "action",
 		IsLocal:        cr.Local,
 		AffectsRelease: cr.AffectsRelease,
+		Cmd:            cr.Shell,
 	}
 
 	// Dry-run: skip execution — action outcome cannot be predicted without running

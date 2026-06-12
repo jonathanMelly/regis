@@ -68,6 +68,7 @@ type Result struct {
 	Warnings         []string          // shown with ⚠ in output for all statuses; used e.g. for git: true uncommitted-state alerts
 	FileTotal        int               // total files considered by multi-file cues (pack, render, multi-src config)
 	FileChanged      int               // how many of those files differ from remote
+	Cmd              string            // human-readable command/path that was or would be executed (for display in exec tab)
 }
 
 // IsReleaseAffecting reports whether this result should trigger release creation.

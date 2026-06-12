@@ -257,12 +257,10 @@ func RenderTable(results []cue.Result, target string, total time.Duration, deplo
 	return sb.String()
 }
 
-// cueDetailLines returns displayable detail lines for a single result.
-// Returns nil when nothing should be shown.
-// Lines use 2-space indent for the cue header, 4-space for sub-lines.
-// Used both by AppendDetails (appended below the table) and RenderTable (inline per scenario).
-// showDiff controls whether text diffs are included; showStdout controls stdout/stderr output.
-func cueDetailLines(r cue.Result, showDiff bool, showStdout bool, minfo *ManifestInfo) []string {
+// CueInfoLines returns regis metadata lines for a result: manifest drift, warnings,
+// binary path/mtime/MD5 comparison, and unified text diffs.
+// showDiff controls whether text diffs are included.
+func CueInfoLines(r cue.Result, showDiff bool, minfo *ManifestInfo) []string {
 	var lines []string
 
 	// Manifest drift — always shown when detected.
@@ -286,12 +284,6 @@ func cueDetailLines(r cue.Result, showDiff bool, showStdout bool, minfo *Manifes
 	}
 
 	switch r.Status {
-	case cue.StatusEqual:
-		if r.Stdout != "" {
-			for _, l := range strings.Split(strings.TrimRight(r.Stdout, "\n"), "\n") {
-				lines = append(lines, "  "+l)
-			}
-		}
 	case cue.StatusFailed:
 		detail := resultDetail(r)
 		if detail != "" {
@@ -304,8 +296,6 @@ func cueDetailLines(r cue.Result, showDiff bool, showStdout bool, minfo *Manifes
 	case cue.StatusSkipped:
 		if r.Stdout != "" {
 			lines = append(lines, fmt.Sprintf("  %s: skipped — %s", r.CueName, r.Stdout))
-		} else if showStdout {
-			lines = append(lines, fmt.Sprintf("  %s: skipped — action outcome cannot be determined without executing", r.CueName))
 		}
 	case cue.StatusChanged:
 		// Binary cues: always show path + mtime + MD5 comparison when available.
@@ -324,6 +314,41 @@ func cueDetailLines(r cue.Result, showDiff bool, showStdout bool, minfo *Manifes
 				lines = append(lines, "  "+l)
 			}
 		}
+	}
+	return lines
+}
+
+// CueExecLines returns stdout/stderr/command output lines for a result.
+// The first line is the shell command / path (r.Cmd or LocalPath→RemotePath for binary),
+// truncated with ellipsis at 72 chars. showStdout=true includes output lines.
+func CueExecLines(r cue.Result, showStdout bool) []string {
+	var lines []string
+
+	// Command / path header.
+	cmdLine := r.Cmd
+	if cmdLine == "" && r.Nature == "binary" && r.LocalPath != "" {
+		cmdLine = r.LocalPath + " → " + r.RemotePath
+	}
+	if cmdLine != "" {
+		if len([]rune(cmdLine)) > 72 {
+			runes := []rune(cmdLine)
+			cmdLine = string(runes[:69]) + "..."
+		}
+		lines = append(lines, "  $ "+cmdLine)
+	}
+
+	switch r.Status {
+	case cue.StatusEqual:
+		if r.Stdout != "" {
+			for _, l := range strings.Split(strings.TrimRight(r.Stdout, "\n"), "\n") {
+				lines = append(lines, "  "+l)
+			}
+		}
+	case cue.StatusSkipped:
+		if showStdout && r.Stdout == "" && r.Nature == "action" {
+			lines = append(lines, "  (skipped — action outcome cannot be determined without executing)")
+		}
+	case cue.StatusChanged, cue.StatusFailed:
 		if showStdout {
 			if out := strings.TrimSpace(r.Stdout + r.Stderr); out != "" {
 				for _, l := range strings.Split(out, "\n") {
@@ -333,6 +358,12 @@ func cueDetailLines(r cue.Result, showDiff bool, showStdout bool, minfo *Manifes
 		}
 	}
 	return lines
+}
+
+// cueDetailLines returns displayable detail lines for a single result (concat of info + exec).
+// Used by RenderTable and RenderTree which don't need the exec/info split.
+func cueDetailLines(r cue.Result, showDiff bool, showStdout bool, minfo *ManifestInfo) []string {
+	return append(CueInfoLines(r, showDiff, minfo), CueExecLines(r, showStdout)...)
 }
 
 // AppendDetails returns extra lines for failed/skipped/verbose results, appended below the table.

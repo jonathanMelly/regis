@@ -13,11 +13,25 @@ import (
 	"git.disroot.org/jmy/regis/internal/output"
 )
 
+// ── ANSI helpers ─────────────────────────────────────────────────────────────
+
+const (
+	ansiReset     = "\033[m"
+	ansiDim       = "\033[2m"
+	ansiGreen     = "\033[32m"
+	ansiYellow    = "\033[33m"
+	ansiRed       = "\033[31m"
+	ansiDimYellow = "\033[2;33m"
+	ansiReverse   = "\033[7m"
+	ansiBold      = "\033[1m"
+)
+
+func colorize(s, color string) string { return color + s + ansiReset }
+
 // ── live-phase types ─────────────────────────────────────────────────────────
 
 var spinFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
-// liveEntry tracks the check state of one step during the live phase.
 type liveEntry struct {
 	info        cue.StepInfo
 	done        bool
@@ -29,7 +43,7 @@ type liveEntry struct {
 type livePrePhaseMsg    struct{ steps []cue.StepInfo }
 type liveCheckResultMsg struct{ result cue.Result }
 type liveFileProgressMsg struct {
-	fullName      string // "scenarioLabel > cueName" (from stepWithFileProgress)
+	fullName      string
 	scanned, total int
 }
 type liveRunCompleteMsg struct {
@@ -43,7 +57,6 @@ func liveTick() tea.Cmd {
 	return tea.Tick(80*time.Millisecond, func(time.Time) tea.Msg { return liveTickMsg{} })
 }
 
-
 func liveProgressBar(scanned, total, width int) string {
 	if total <= 0 {
 		return ""
@@ -56,7 +69,16 @@ func liveProgressBar(scanned, total, width int) string {
 		fmt.Sprintf(" %d/%d", scanned, total)
 }
 
-// ── browse-mode types (unchanged) ────────────────────────────────────────────
+// ── browse-mode types ─────────────────────────────────────────────────────────
+
+// tabID identifies which tab is active for a cue row.
+type tabID int
+
+const (
+	tabDetails tabID = 0
+	tabExec    tabID = 1
+	tabCount   tabID = 2
+)
 
 type rdiffItemKind int
 
@@ -64,16 +86,12 @@ const (
 	rdiffKindScenario       rdiffItemKind = iota
 	rdiffKindMergedScenario               // single-cue scenario — label+cue on one line
 	rdiffKindCue
-	rdiffKindDetail
-	rdiffKindSkipped // summary of action/service cues at the end of a scenario
 )
-
 
 type rdiffVisItem struct {
 	kind        rdiffItemKind
 	scenarioIdx int
 	cueIdx      int
-	line        string
 }
 
 type rdiffScenario struct {
@@ -81,14 +99,15 @@ type rdiffScenario struct {
 	label       string
 	results     []cue.Result
 	expanded    bool
-	cueExpanded []bool
-	detailLines [][]string
+	cueExpanded []bool     // whether tab content is visible
+	activeTab   []tabID    // which tab is active
+	detailLines [][]string // per-cue: CueInfoLines output (renamed details)
+	execLines   [][]string // per-cue: CueExecLines output
 }
 
 // ── model ────────────────────────────────────────────────────────────────────
 
 type rdiffModel struct {
-	// browse mode
 	scenarios   []rdiffScenario
 	visible     []rdiffVisItem
 	cursor      int
@@ -101,13 +120,14 @@ type rdiffModel struct {
 	width       int
 	height      int
 	quitting    bool
+	isRun       bool
+	hideSkipped bool
 
-	// live checking phase
+	// live phase
 	checking    bool
 	liveEntries []liveEntry
 	spinFrame   int
-
-	startedAt time.Time // when the check began (for title display)
+	startedAt   time.Time
 }
 
 func (m rdiffModel) Init() tea.Cmd {
@@ -124,7 +144,6 @@ func (m rdiffModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		return m, nil
 
-	// ── live phase messages ──────────────────────────────────────────────
 	case livePrePhaseMsg:
 		m.liveEntries = make([]liveEntry, len(msg.steps))
 		for i, s := range msg.steps {
@@ -145,7 +164,6 @@ func (m rdiffModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case liveFileProgressMsg:
-		// fullName = "scenarioLabel > cueName"; extract cueName.
 		cueName := msg.fullName
 		if idx := strings.LastIndex(msg.fullName, " > "); idx >= 0 {
 			cueName = msg.fullName[idx+3:]
@@ -161,12 +179,10 @@ func (m rdiffModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case liveRunCompleteMsg:
 		if len(msg.results) == 0 {
-			// Fatal error before any results — just allow the user to quit.
 			m.checking = false
 			return m, nil
 		}
-		newM := newRdiffModel(msg.results, m.target, msg.elapsed, m.verbose, m.minfo)
-		// Start fully expanded so the user immediately sees the diff tree.
+		newM := newLiveModel(msg.results, m.target, msg.elapsed, m.verbose, m.minfo, m.isRun)
 		for i := range newM.scenarios {
 			newM.scenarios[i].expanded = true
 		}
@@ -183,7 +199,6 @@ func (m rdiffModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	// ── key events ──────────────────────────────────────────────────────
 	case tea.KeyMsg:
 		if m.checking {
 			if msg.Type == tea.KeyCtrlC || msg.String() == "q" {
@@ -200,70 +215,60 @@ func (m rdiffModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// ── live view ────────────────────────────────────────────────────────────────
+// ── live view ─────────────────────────────────────────────────────────────────
 
-func (m rdiffModel) rdiffTitle() string {
+func (m rdiffModel) titleLine() string {
 	ts := m.startedAt
 	if ts.IsZero() {
 		ts = time.Now()
 	}
-	return fmt.Sprintf("rdiff  %s   %s", m.target, ts.Format("02.01.2006 15:04:05"))
+	verb := "rdiff"
+	if m.isRun {
+		verb = "run  "
+	}
+	return fmt.Sprintf("%s  %s   %s", verb, m.target, ts.Format("02.01.2006 15:04:05"))
 }
 
-func collectWarnings(results []cue.Result) []string {
-	seen := map[string]bool{}
-	var out []string
-	for _, r := range results {
-		for _, w := range r.Warnings {
-			msg := fmt.Sprintf("⚠  %s: %s", r.CueName, w)
-			if !seen[msg] {
-				seen[msg] = true
-				out = append(out, msg)
-			}
-		}
+func liveSymbol(r cue.Result, spinFrame int, done bool) string {
+	if !done {
+		return colorize(spinFrames[spinFrame], ansiYellow)
 	}
-	return out
+	switch r.Status {
+	case cue.StatusChanged:
+		if !r.LocalMtime.IsZero() && !r.RemoteMtime.IsZero() && r.RemoteMtime.After(r.LocalMtime) {
+			return colorize("↓", ansiGreen)
+		}
+		return colorize("↑", ansiGreen)
+	case cue.StatusEqual:
+		return colorize("=", ansiDim)
+	case cue.StatusFailed:
+		return colorize("✕", ansiRed)
+	case cue.StatusSkipped:
+		return colorize("-", ansiDimYellow)
+	}
+	return "?"
 }
 
 func (m rdiffModel) viewLive() string {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "%s\n\n", m.rdiffTitle())
+	fmt.Fprintf(&sb, "%s\n\n", m.titleLine())
 
 	checked := 0
-	var skippedNames []string
-	seenSkipped := map[string]bool{}
-	var doneResults []cue.Result
 	for _, e := range m.liveEntries {
-		if !e.done {
-			continue
+		if e.done {
+			checked++
 		}
-		checked++
-		if e.result.Status == cue.StatusSkipped && !seenSkipped[e.info.Name] {
-			seenSkipped[e.info.Name] = true
-			skippedNames = append(skippedNames, e.info.Name)
-		}
-		doneResults = append(doneResults, e.result)
 	}
-	warnings := collectWarnings(doneResults)
 
-	// Reserve lines: title(1) + blank(1) + hr(1) + counter(1) + blank+skipped+warnings.
-	extra := len(warnings)
-	if len(skippedNames) > 0 {
-		extra++
-	}
-	if extra > 0 {
-		extra++ // blank line before skipped/warnings block
-	}
-	reserved := 4 + extra
+	reserved := 4
 	maxLines := m.height - reserved
 	if maxLines < 1 {
 		maxLines = 1
 	}
 
-	// Group entries by scenario, preserving order of first appearance.
 	type liveGroup struct {
 		label   string
-		indices []int // indices into m.liveEntries
+		indices []int
 	}
 	var groups []liveGroup
 	groupIdx := map[string]int{}
@@ -281,59 +286,32 @@ func (m rdiffModel) viewLive() string {
 		}
 	}
 
-	// Render the tree — same format as viewBrowse so the transition is invisible.
 	var treeLines []string
 	for _, g := range groups {
-		// Skip scenarios where all done entries are skipped.
-		allDoneSkipped := true
-		for _, i := range g.indices {
-			e := m.liveEntries[i]
-			if !e.done || e.result.Status != cue.StatusSkipped {
-				allDoneSkipped = false
-				break
-			}
-		}
-		if allDoneSkipped {
-			continue
-		}
-
 		if len(g.indices) == 1 {
-			// Single-cue: merged line (mirrors rdiffKindMergedScenario).
 			e := m.liveEntries[g.indices[0]]
+			sym := liveSymbol(e.result, m.spinFrame, e.done)
+			name := e.info.Name
 			if e.done {
-				sym := rdiffStatusSymbol(e.result)
-				// Use ○ for statuses that will have expandable detail lines in browse.
-				indicator := " "
-				if e.result.Status == cue.StatusChanged || e.result.Status == cue.StatusFailed {
-					indicator = "○"
-				}
-				line := fmt.Sprintf("%s %s  %s", indicator, sym, g.label)
-				if e.result.CueName != e.info.ScenarioName {
-					line += "   " + e.result.CueName
-				}
-				if e.result.FileTotal > 0 {
-					line += fmt.Sprintf("  ~%d/%d", e.result.FileChanged, e.result.FileTotal)
-				}
-				treeLines = append(treeLines, line)
-			} else {
-				spin := spinFrames[m.spinFrame]
-				line := fmt.Sprintf("  %s  %s", spin, g.label)
-				if e.info.Name != e.info.ScenarioName {
-					line += "   " + e.info.Name
-				}
-				if e.fileTotal > 0 {
-					line += "  " + liveProgressBar(e.fileScanned, e.fileTotal, 16)
-				}
-				treeLines = append(treeLines, line)
+				name = e.result.CueName
 			}
+			line := fmt.Sprintf("  %s  %s", sym, g.label)
+			if name != e.info.ScenarioName {
+				line += "   " + name
+			}
+			if e.done && e.result.FileTotal > 0 {
+				line += fmt.Sprintf("  ~%d/%d", e.result.FileChanged, e.result.FileTotal)
+			} else if !e.done && e.fileTotal > 0 {
+				line += "  " + liveProgressBar(e.fileScanned, e.fileTotal, 16)
+			}
+			if e.done && len(e.result.Warnings) > 0 {
+				line += "  ⚠"
+			}
+			treeLines = append(treeLines, line)
 		} else {
-			// Multi-cue: scenario header + cue lines (mirrors rdiffKindScenario + rdiffKindCue).
 			allDone, changed := true, 0
 			for _, i := range g.indices {
 				e := m.liveEntries[i]
-				if e.done && e.result.Status == cue.StatusSkipped {
-					continue
-				}
 				if !e.done {
 					allDone = false
 				} else if e.result.Status == cue.StatusChanged {
@@ -343,34 +321,31 @@ func (m rdiffModel) viewLive() string {
 			var info string
 			if allDone {
 				if changed > 0 {
-					info = fmt.Sprintf("%d changed", changed)
+					info = colorize(fmt.Sprintf("%d changed", changed), ansiGreen)
 				} else {
-					info = "all in sync"
+					info = colorize("all in sync", ansiDim)
 				}
 			} else {
-				info = spinFrames[m.spinFrame]
+				info = colorize(spinFrames[m.spinFrame], ansiYellow)
 			}
 			treeLines = append(treeLines, fmt.Sprintf("● %s   %s", g.label, info))
 			for _, i := range g.indices {
 				e := m.liveEntries[i]
-				if e.done && e.result.Status == cue.StatusSkipped {
-					continue
-				}
+				sym := liveSymbol(e.result, m.spinFrame, e.done)
+				name := e.info.Name
 				if e.done {
-					sym := rdiffStatusSymbol(e.result)
-					line := fmt.Sprintf("    %s  %s", sym, e.info.Name)
-					if e.result.FileTotal > 0 {
-						line += fmt.Sprintf("  ~%d/%d", e.result.FileChanged, e.result.FileTotal)
-					}
-					treeLines = append(treeLines, line)
-				} else {
-					spin := spinFrames[m.spinFrame]
-					line := fmt.Sprintf("    %s  %s", spin, e.info.Name)
-					if e.fileTotal > 0 {
-						line += "  " + liveProgressBar(e.fileScanned, e.fileTotal, 16)
-					}
-					treeLines = append(treeLines, line)
+					name = e.result.CueName
 				}
+				line := fmt.Sprintf("    %s  %s", sym, name)
+				if e.done && e.result.FileTotal > 0 {
+					line += fmt.Sprintf("  ~%d/%d", e.result.FileChanged, e.result.FileTotal)
+				} else if !e.done && e.fileTotal > 0 {
+					line += "  " + liveProgressBar(e.fileScanned, e.fileTotal, 16)
+				}
+				if e.done && len(e.result.Warnings) > 0 {
+					line += "  ⚠"
+				}
+				treeLines = append(treeLines, line)
 			}
 		}
 	}
@@ -387,23 +362,18 @@ func (m rdiffModel) viewLive() string {
 	}
 	sb.WriteString(strings.Repeat("─", ruleWidth) + "\n")
 	if len(m.liveEntries) == 0 {
-		fmt.Fprintf(&sb, "checking %s…\n", m.target)
+		verb := "checking"
+		if m.isRun {
+			verb = "deploying"
+		}
+		fmt.Fprintf(&sb, "%s %s…\n", verb, m.target)
 	} else {
 		fmt.Fprintf(&sb, "%d / %d   q quit\n", checked, len(m.liveEntries))
-	}
-	if len(skippedNames) > 0 || len(warnings) > 0 {
-		sb.WriteString("\n")
-	}
-	if len(skippedNames) > 0 {
-		fmt.Fprintf(&sb, "·  skipped: %s\n", strings.Join(skippedNames, ", "))
-	}
-	for _, w := range warnings {
-		fmt.Fprintf(&sb, "%s\n", w)
 	}
 	return sb.String()
 }
 
-// ── browse view ──────────────────────────────────────────────────────────────
+// ── browse view ───────────────────────────────────────────────────────────────
 
 func (m rdiffModel) View() string {
 	if m.quitting {
@@ -416,38 +386,20 @@ func (m rdiffModel) View() string {
 }
 
 func (m rdiffModel) viewBrowse() string {
-	warnings := collectWarnings(m.allResults())
-
-	seenSkipped := map[string]bool{}
-	var skippedNames []string
-	for _, r := range m.allResults() {
-		if r.Status == cue.StatusSkipped && !seenSkipped[r.CueName] {
-			seenSkipped[r.CueName] = true
-			skippedNames = append(skippedNames, r.CueName)
-		}
-	}
-
-	extra := len(warnings)
-	if len(skippedNames) > 0 {
-		extra++
-	}
-	if extra > 0 {
-		extra++ // blank line separating stats from skipped/warnings block
-	}
-	reserved := 6 + extra // title + blank + rule + summary + blank + help
+	reserved := 6
 	if m.searchMode {
-		reserved = 7 + extra
+		reserved = 7
 	}
 	listHeight := m.height - reserved
 	if listHeight < 1 {
 		listHeight = 1
 	}
 
-	listLines := m.renderList()
-	start, end := m.scrollWindow(listLines, listHeight)
+	listLines, cursorLine := m.renderListAndCursorLine()
+	start, end := scrollWindowAt(listLines, listHeight, cursorLine)
 
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "%s\n\n", m.rdiffTitle())
+	fmt.Fprintf(&sb, "%s\n\n", m.titleLine())
 	for _, l := range listLines[start:end] {
 		sb.WriteString(l + "\n")
 	}
@@ -466,62 +418,109 @@ func (m rdiffModel) viewBrowse() string {
 		fmt.Fprintf(&sb, "%d changed · %d unchanged   %.1fs\n",
 			changed, equal, m.total.Seconds())
 	}
-	if len(skippedNames) > 0 || len(warnings) > 0 {
-		sb.WriteString("\n")
-	}
-	if len(skippedNames) > 0 {
-		fmt.Fprintf(&sb, "·  skipped: %s\n", strings.Join(skippedNames, ", "))
-	}
-	for _, w := range warnings {
-		fmt.Fprintf(&sb, "%s\n", w)
-	}
 
 	if m.searchMode {
 		fmt.Fprintf(&sb, "\n/ %s█\n", m.searchQuery)
 	} else {
-		sb.WriteString("\n↑↓ navigate  →/enter expand  ← collapse  +/- all  / search  q quit\n")
+		var skippedHint string
+		if m.hideSkipped {
+			n := m.countSkipped()
+			if n > 0 {
+				skippedHint = fmt.Sprintf("  h show-skipped (%d)", n)
+			} else {
+				skippedHint = "  h show-skipped"
+			}
+		} else {
+			skippedHint = "  h hide-skipped"
+		}
+		fmt.Fprintf(&sb, "\n↑↓ navigate  →← tab/collapse  +/- all  / search%s  q quit\n", skippedHint)
 	}
 	return sb.String()
 }
 
-// ── browse helpers (unchanged) ───────────────────────────────────────────────
+// ── browse helpers ────────────────────────────────────────────────────────────
 
-func cueSubDetailLines(r cue.Result, verbose bool, minfo *output.ManifestInfo) []string {
-	lines := output.CueDetailLines(r, true, verbose, minfo)
-	if len(lines) == 0 {
-		return nil
-	}
-	lines = lines[1:]
-	result := make([]string, len(lines))
-	for i, l := range lines {
-		result[i] = strings.TrimPrefix(l, "    ")
-	}
-	return result
-}
-
-func rdiffStatusSymbol(r cue.Result) string {
+func browseSymbol(r cue.Result) string {
 	switch r.Status {
 	case cue.StatusChanged:
 		if !r.LocalMtime.IsZero() && !r.RemoteMtime.IsZero() && r.RemoteMtime.After(r.LocalMtime) {
-			return "↓"
+			return colorize("↓", ansiGreen)
 		}
-		return "↑"
+		return colorize("↑", ansiGreen)
 	case cue.StatusEqual:
-		return "="
+		return colorize("=", ansiDim)
 	case cue.StatusFailed:
-		return "✕"
+		return colorize("✕", ansiRed)
 	case cue.StatusSkipped:
-		return "/"
+		return colorize("-", ansiDimYellow)
 	}
 	return "?"
 }
 
-func newRdiffModel(
+// tabBar builds the inline tab bar string for a cue with tab content.
+// Returns "" when neither tab has content (no bar shown).
+func tabBar(sc rdiffScenario, ci int, isCursor bool) string {
+	hasDetails := len(sc.detailLines[ci]) > 0
+	hasExec := len(sc.execLines[ci]) > 0
+	if !hasDetails && !hasExec {
+		return ""
+	}
+	active := sc.activeTab[ci]
+
+	renderTab := func(name string, t tabID) string {
+		if t == active {
+			// Active tab: bold + brackets
+			label := "[" + name + "]"
+			if isCursor {
+				return ansiBold + label + ansiReset + ansiReverse
+			}
+			return ansiBold + label + ansiReset
+		}
+		// Inactive but available: dim
+		if (t == tabDetails && hasDetails) || (t == tabExec && hasExec) {
+			return colorize(name, ansiDim)
+		}
+		return ""
+	}
+
+	parts := []string{}
+	if hasDetails || active == tabDetails {
+		parts = append(parts, renderTab("details", tabDetails))
+	}
+	if hasExec || active == tabExec {
+		parts = append(parts, renderTab("exec", tabExec))
+	}
+	// Filter empty
+	var filtered []string
+	for _, p := range parts {
+		if p != "" {
+			filtered = append(filtered, p)
+		}
+	}
+	if len(filtered) == 0 {
+		return ""
+	}
+	return "  " + strings.Join(filtered, "  ")
+}
+
+// activeTabLines returns the content lines for the currently active tab of a cue.
+func activeTabLines(sc rdiffScenario, ci int) []string {
+	switch sc.activeTab[ci] {
+	case tabDetails:
+		return sc.detailLines[ci]
+	case tabExec:
+		return sc.execLines[ci]
+	}
+	return nil
+}
+
+func newLiveModel(
 	results []cue.Result,
 	target string,
 	total time.Duration,
 	verbose bool,
 	minfo *output.ManifestInfo,
+	isRun bool,
 ) rdiffModel {
 	type groupEntry struct {
 		name  string
@@ -545,17 +544,22 @@ func newRdiffModel(
 
 	scenarios := make([]rdiffScenario, len(groups))
 	for i, g := range groups {
-		subLines := make([][]string, len(g.rows))
+		n := len(g.rows)
+		detailL := make([][]string, n)
+		execL := make([][]string, n)
 		for j, r := range g.rows {
-			subLines[j] = cueSubDetailLines(r, verbose, minfo)
+			detailL[j] = output.CueInfoLines(r, true, minfo)
+			execL[j] = output.CueExecLines(r, verbose)
 		}
 		scenarios[i] = rdiffScenario{
 			name:        g.name,
 			label:       g.label,
 			results:     g.rows,
 			expanded:    false,
-			cueExpanded: make([]bool, len(g.rows)),
-			detailLines: subLines,
+			cueExpanded: make([]bool, n),
+			activeTab:   make([]tabID, n),
+			detailLines: detailL,
+			execLines:   execL,
 		}
 	}
 
@@ -565,6 +569,7 @@ func newRdiffModel(
 		total:     total,
 		verbose:   verbose,
 		minfo:     minfo,
+		isRun:     isRun,
 		width:     80,
 		height:    24,
 		startedAt: time.Now(),
@@ -577,18 +582,6 @@ func (m rdiffModel) buildVisible() []rdiffVisItem {
 	var items []rdiffVisItem
 	query := strings.ToLower(m.searchQuery)
 	for si, sc := range m.scenarios {
-		// Entirely-skipped scenarios are omitted from the tree; they appear in the footer.
-		allSkipped := true
-		for _, r := range sc.results {
-			if r.Status != cue.StatusSkipped {
-				allSkipped = false
-				break
-			}
-		}
-		if allSkipped {
-			continue
-		}
-
 		scenarioMatch := query == "" ||
 			strings.Contains(strings.ToLower(sc.name), query) ||
 			strings.Contains(strings.ToLower(sc.label), query)
@@ -605,40 +598,182 @@ func (m rdiffModel) buildVisible() []rdiffVisItem {
 			}
 		}
 
-		// Single-cue scenario (non-skipped guaranteed by allSkipped check above).
 		if len(sc.results) == 1 {
 			ci := 0
-			items = append(items, rdiffVisItem{kind: rdiffKindMergedScenario, scenarioIdx: si, cueIdx: ci})
-			if sc.cueExpanded[ci] {
-				for _, line := range sc.detailLines[ci] {
-					items = append(items, rdiffVisItem{kind: rdiffKindDetail, scenarioIdx: si, cueIdx: ci, line: line})
-				}
+			r := sc.results[ci]
+			if m.hideSkipped && r.Status == cue.StatusSkipped {
+				continue
 			}
+			items = append(items, rdiffVisItem{kind: rdiffKindMergedScenario, scenarioIdx: si, cueIdx: ci})
 			continue
 		}
 
-		// Multi-cue scenario: show non-skipped cues only.
+		// Multi-cue: check if any non-skipped cue would show.
+		hasVisible := false
+		for _, r := range sc.results {
+			if !m.hideSkipped || r.Status != cue.StatusSkipped {
+				hasVisible = true
+				break
+			}
+		}
+		if !hasVisible {
+			continue
+		}
+
 		items = append(items, rdiffVisItem{kind: rdiffKindScenario, scenarioIdx: si, cueIdx: -1})
 		if !sc.expanded {
 			continue
 		}
 		for ci, r := range sc.results {
-			if r.Status == cue.StatusSkipped {
+			if m.hideSkipped && r.Status == cue.StatusSkipped {
 				continue
 			}
 			if query != "" && !scenarioMatch && !strings.Contains(strings.ToLower(r.CueName), query) {
 				continue
 			}
 			items = append(items, rdiffVisItem{kind: rdiffKindCue, scenarioIdx: si, cueIdx: ci})
-			if !sc.cueExpanded[ci] {
-				continue
-			}
-			for _, line := range sc.detailLines[ci] {
-				items = append(items, rdiffVisItem{kind: rdiffKindDetail, scenarioIdx: si, cueIdx: ci, line: line})
-			}
 		}
 	}
 	return items
+}
+
+// renderListAndCursorLine renders all visible items to a flat line slice.
+// cursorLine is the index of the first line belonging to the cursor item.
+func (m rdiffModel) renderListAndCursorLine() (lines []string, cursorLine int) {
+	cursorLine = 0
+	for vi, item := range m.visible {
+		isCursor := vi == m.cursor
+		if isCursor {
+			cursorLine = len(lines)
+		}
+		itemLines := m.renderItem(item, isCursor)
+		lines = append(lines, itemLines...)
+	}
+	return
+}
+
+// renderItem returns the display lines for a single visible item.
+// An expanded cue row includes its active tab content lines beneath it.
+func (m rdiffModel) renderItem(item rdiffVisItem, isCursor bool) []string {
+	si, ci := item.scenarioIdx, item.cueIdx
+
+	var header string
+	switch item.kind {
+	case rdiffKindScenario:
+		sc := m.scenarios[si]
+		arrow := "○"
+		if sc.expanded {
+			arrow = "●"
+		}
+		changed, failed := 0, 0
+		for _, r := range sc.results {
+			switch r.Status {
+			case cue.StatusChanged:
+				changed++
+			case cue.StatusFailed:
+				failed++
+			}
+		}
+		var info string
+		switch {
+		case failed > 0:
+			info = colorize(fmt.Sprintf("%d failed", failed), ansiRed)
+		case changed > 0:
+			info = colorize(fmt.Sprintf("%d changed", changed), ansiGreen)
+		default:
+			info = colorize("all in sync", ansiDim)
+		}
+		header = fmt.Sprintf("%s %s   %s", arrow, sc.label, info)
+
+	case rdiffKindMergedScenario:
+		sc := m.scenarios[si]
+		r := sc.results[ci]
+		sym := browseSymbol(r)
+		hasContent := len(sc.detailLines[ci]) > 0 || len(sc.execLines[ci]) > 0
+		indicator := " "
+		if hasContent {
+			if sc.cueExpanded[ci] {
+				indicator = "●"
+			} else {
+				indicator = "○"
+			}
+		}
+		header = fmt.Sprintf("%s %s  %s", indicator, sym, sc.label)
+		if r.CueName != sc.name {
+			header += "   " + r.CueName
+		}
+		if r.FileTotal > 0 {
+			header += fmt.Sprintf("  ~%d/%d", r.FileChanged, r.FileTotal)
+		}
+		if len(r.Warnings) > 0 {
+			header += "  ⚠"
+		}
+		if sc.cueExpanded[ci] {
+			header += tabBar(sc, ci, isCursor)
+		}
+
+	case rdiffKindCue:
+		sc := m.scenarios[si]
+		r := sc.results[ci]
+		sym := browseSymbol(r)
+		hasContent := len(sc.detailLines[ci]) > 0 || len(sc.execLines[ci]) > 0
+		indicator := " "
+		if hasContent {
+			if sc.cueExpanded[ci] {
+				indicator = "●"
+			} else {
+				indicator = "○"
+			}
+		}
+		name := r.CueName
+		if r.FileTotal > 0 {
+			name += fmt.Sprintf("  ~%d/%d", r.FileChanged, r.FileTotal)
+		}
+		header = fmt.Sprintf("  %s %s  %s", indicator, sym, name)
+		if len(r.Warnings) > 0 {
+			header += "  ⚠"
+		}
+		if sc.cueExpanded[ci] {
+			header += tabBar(sc, ci, isCursor)
+		}
+	}
+
+	if isCursor {
+		header = ansiReverse + header + ansiReset
+	}
+
+	lines := []string{header}
+
+	// Append active tab content lines when expanded.
+	if item.kind != rdiffKindScenario {
+		sc := m.scenarios[si]
+		if sc.cueExpanded[ci] {
+			for _, l := range activeTabLines(sc, ci) {
+				lines = append(lines, "      "+l)
+			}
+		}
+	}
+	return lines
+}
+
+func scrollWindowAt(lines []string, height, cursorLine int) (start, end int) {
+	n := len(lines)
+	if n <= height {
+		return 0, n
+	}
+	start = cursorLine - height/2
+	if start < 0 {
+		start = 0
+	}
+	end = start + height
+	if end > n {
+		end = n
+		start = end - height
+		if start < 0 {
+			start = 0
+		}
+	}
+	return start, end
 }
 
 func (m rdiffModel) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -686,9 +821,9 @@ func (m rdiffModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cursor++
 		}
 	case tea.KeyRight, tea.KeyTab, tea.KeyEnter:
-		m = m.toggleExpand()
+		m = m.actionRight()
 	case tea.KeyLeft, tea.KeyBackspace:
-		m = m.collapseItem()
+		m = m.actionLeft()
 	case tea.KeyShiftTab:
 		m = m.jumpPrevScenario()
 	case tea.KeyCtrlC:
@@ -708,6 +843,10 @@ func (m rdiffModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m = m.compactAll()
 		case "d", "+":
 			m = m.expandAll()
+		case "h":
+			m.hideSkipped = !m.hideSkipped
+			m.visible = m.buildVisible()
+			m.cursor = rdiffClamp(m.cursor, 0, len(m.visible)-1)
 		case "/":
 			m.searchMode = true
 			m.searchQuery = ""
@@ -719,48 +858,100 @@ func (m rdiffModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m rdiffModel) toggleExpand() rdiffModel {
+// actionRight handles → / enter / tab:
+// - Scenario: toggle expand
+// - Cue collapsed: expand, set first tab
+// - Cue expanded: next tab (cycles)
+func (m rdiffModel) actionRight() rdiffModel {
 	if len(m.visible) == 0 {
 		return m
 	}
 	item := m.visible[m.cursor]
+	si, ci := item.scenarioIdx, item.cueIdx
+
 	switch item.kind {
 	case rdiffKindScenario:
-		m.scenarios[item.scenarioIdx].expanded = !m.scenarios[item.scenarioIdx].expanded
+		m.scenarios[si].expanded = !m.scenarios[si].expanded
+
 	case rdiffKindMergedScenario, rdiffKindCue:
-		si, ci := item.scenarioIdx, item.cueIdx
-		if len(m.scenarios[si].detailLines[ci]) > 0 {
-			m.scenarios[si].cueExpanded[ci] = !m.scenarios[si].cueExpanded[ci]
+		sc := m.scenarios[si]
+		hasDetails := len(sc.detailLines[ci]) > 0
+		hasExec := len(sc.execLines[ci]) > 0
+		if !hasDetails && !hasExec {
+			break // nothing to show
+		}
+		if !sc.cueExpanded[ci] {
+			// Expand: open on first available tab.
+			m.scenarios[si].cueExpanded[ci] = true
+			if hasDetails {
+				m.scenarios[si].activeTab[ci] = tabDetails
+			} else {
+				m.scenarios[si].activeTab[ci] = tabExec
+			}
+		} else {
+			// Already open: cycle to next available tab.
+			cur := sc.activeTab[ci]
+			for delta := tabID(1); delta < tabCount; delta++ {
+				next := (cur + delta) % tabCount
+				if next == tabDetails && hasDetails {
+					m.scenarios[si].activeTab[ci] = next
+					goto done
+				}
+				if next == tabExec && hasExec {
+					m.scenarios[si].activeTab[ci] = next
+					goto done
+				}
+			}
 		}
 	}
+done:
 	m.visible = m.buildVisible()
 	m.cursor = rdiffClamp(m.cursor, 0, len(m.visible)-1)
 	return m
 }
 
-func (m rdiffModel) collapseItem() rdiffModel {
+// actionLeft handles ←:
+// - Scenario: collapse
+// - Cue expanded at tab > 0: go to previous tab
+// - Cue expanded at tab 0: collapse
+// - Cue collapsed: collapse parent scenario
+func (m rdiffModel) actionLeft() rdiffModel {
 	if len(m.visible) == 0 {
 		return m
 	}
 	item := m.visible[m.cursor]
+	si, ci := item.scenarioIdx, item.cueIdx
+
 	switch item.kind {
 	case rdiffKindScenario:
-		m.scenarios[item.scenarioIdx].expanded = false
+		m.scenarios[si].expanded = false
+
 	case rdiffKindMergedScenario, rdiffKindCue:
-		m.scenarios[item.scenarioIdx].cueExpanded[item.cueIdx] = false
-	case rdiffKindDetail:
-		si, ci := item.scenarioIdx, item.cueIdx
-		m.scenarios[si].cueExpanded[ci] = false
-		m.visible = m.buildVisible()
-		// Move cursor up to parent (cue or merged-scenario row).
-		for i, v := range m.visible {
-			parentKind := v.kind == rdiffKindCue || v.kind == rdiffKindMergedScenario
-			if parentKind && v.scenarioIdx == si && v.cueIdx == ci {
-				m.cursor = i
-				return m
+		sc := m.scenarios[si]
+		if sc.cueExpanded[ci] {
+			cur := sc.activeTab[ci]
+			// Search strictly backwards for a previous available tab (no wrap).
+			found := false
+			for t := int(cur) - 1; t >= 0; t-- {
+				if tabID(t) == tabDetails && len(sc.detailLines[ci]) > 0 {
+					m.scenarios[si].activeTab[ci] = tabID(t)
+					found = true
+					break
+				}
+				if tabID(t) == tabExec && len(sc.execLines[ci]) > 0 {
+					m.scenarios[si].activeTab[ci] = tabID(t)
+					found = true
+					break
+				}
 			}
+			if !found {
+				// Already at the first available tab: collapse.
+				m.scenarios[si].cueExpanded[ci] = false
+			}
+		} else if item.kind == rdiffKindCue {
+			// Collapsed cue: collapse the parent scenario.
+			m.scenarios[si].expanded = false
 		}
-		return m
 	}
 	m.visible = m.buildVisible()
 	m.cursor = rdiffClamp(m.cursor, 0, len(m.visible)-1)
@@ -794,104 +985,21 @@ func (m rdiffModel) expandAll() rdiffModel {
 	for i := range m.scenarios {
 		m.scenarios[i].expanded = true
 		for j := range m.scenarios[i].cueExpanded {
-			m.scenarios[i].cueExpanded[j] = true
+			sc := m.scenarios[i]
+			hasContent := len(sc.detailLines[j]) > 0 || len(sc.execLines[j]) > 0
+			m.scenarios[i].cueExpanded[j] = hasContent
+			if hasContent {
+				if len(sc.detailLines[j]) > 0 {
+					m.scenarios[i].activeTab[j] = tabDetails
+				} else {
+					m.scenarios[i].activeTab[j] = tabExec
+				}
+			}
 		}
 	}
 	m.visible = m.buildVisible()
 	m.cursor = rdiffClamp(m.cursor, 0, len(m.visible)-1)
 	return m
-}
-
-func (m rdiffModel) renderList() []string {
-	const ansiReverse = "\033[7m"
-	const ansiReset = "\033[m"
-
-	var lines []string
-	for vi, item := range m.visible {
-		isCursor := vi == m.cursor
-		var line string
-		switch item.kind {
-		case rdiffKindScenario:
-			sc := m.scenarios[item.scenarioIdx]
-			arrow := "○"
-			if sc.expanded {
-				arrow = "●"
-			}
-			changed, skipped := 0, 0
-			for _, r := range sc.results {
-				switch r.Status {
-				case cue.StatusChanged:
-					changed++
-				case cue.StatusSkipped:
-					skipped++
-				}
-			}
-			info := "all in sync"
-			if changed > 0 {
-				info = fmt.Sprintf("%d changed", changed)
-			} else if skipped == len(sc.results) {
-				info = "skipped"
-			}
-			line = fmt.Sprintf("%s %s   %s", arrow, sc.label, info)
-		case rdiffKindMergedScenario:
-			sc := m.scenarios[item.scenarioIdx]
-			r := sc.results[item.cueIdx]
-			sym := rdiffStatusSymbol(r)
-			// Expand indicator only when there are diff details to show.
-			indicator := " "
-			if len(sc.detailLines[item.cueIdx]) > 0 {
-				if sc.cueExpanded[item.cueIdx] {
-					indicator = "●"
-				} else {
-					indicator = "○"
-				}
-			}
-			line = fmt.Sprintf("%s %s  %s", indicator, sym, sc.label)
-			if r.CueName != sc.name {
-				line += "   " + r.CueName
-			}
-			if r.FileTotal > 0 {
-				line += fmt.Sprintf("  ~%d/%d", r.FileChanged, r.FileTotal)
-			}
-		case rdiffKindCue:
-			r := m.scenarios[item.scenarioIdx].results[item.cueIdx]
-			sym := rdiffStatusSymbol(r)
-			name := r.CueName
-			if r.FileTotal > 0 {
-				name += fmt.Sprintf("  ~%d/%d", r.FileChanged, r.FileTotal)
-			}
-			line = fmt.Sprintf("    %s  %s", sym, name)
-		case rdiffKindSkipped:
-			line = "    ·  " + item.line
-		case rdiffKindDetail:
-			line = "       " + item.line
-		}
-		if isCursor {
-			line = ansiReverse + line + ansiReset
-		}
-		lines = append(lines, line)
-	}
-	return lines
-}
-
-func (m rdiffModel) scrollWindow(lines []string, height int) (start, end int) {
-	n := len(lines)
-	if n <= height {
-		return 0, n
-	}
-	start = m.cursor - height/2
-	if start < 0 {
-		start = 0
-	}
-	end = start + height
-	if end > n {
-		end = n
-		start = end - height
-		if start < 0 {
-			start = 0
-		}
-	}
-	return start, end
 }
 
 func (m rdiffModel) allResults() []cue.Result {
@@ -900,6 +1008,18 @@ func (m rdiffModel) allResults() []cue.Result {
 		all = append(all, sc.results...)
 	}
 	return all
+}
+
+func (m rdiffModel) countSkipped() int {
+	n := 0
+	for _, sc := range m.scenarios {
+		for _, r := range sc.results {
+			if r.Status == cue.StatusSkipped {
+				n++
+			}
+		}
+	}
+	return n
 }
 
 func rdiffCountResults(results []cue.Result) (changed, equal, failed int) {
@@ -929,39 +1049,20 @@ func rdiffClamp(v, lo, hi int) int {
 	return v
 }
 
-// ── entry points ─────────────────────────────────────────────────────────────
+// ── entry points ──────────────────────────────────────────────────────────────
 
-// RunRdiffTUI runs the interactive Bubble Tea TUI for rdiff (post-check, Level3 fallback).
-// On quit, prints the static RenderTree output to stdout.
-func RunRdiffTUI(results []cue.Result, target string, total time.Duration, verbose bool, level output.Level, minfo *output.ManifestInfo) error {
-	m := newRdiffModel(results, target, total, verbose, minfo)
-	p := tea.NewProgram(m, tea.WithAltScreen())
-	_, err := p.Run()
-	if err != nil {
-		return err
-	}
-	fmt.Print(output.RenderTree(results, target, total, true, verbose, level, minfo))
-	return nil
-}
-
-// RunLiveRdiffTUI launches a live TUI immediately, shows all expected cues as
-// spinning indicators while runFn executes in a goroutine, then transitions to
-// the interactive browse view when checking completes.
-//
-// runFn is called with a context already wired for WithPrePhase, WithCheckResult,
-// and WithFileProgress — do not set those callbacks before calling this function.
-//
-// On exit, prints the static RenderTree summary to stdout (mirrors RunRdiffTUI).
-// Blocks until the user quits the browse view.
-func RunLiveRdiffTUI(
+// RunLiveTUI launches a live TUI immediately, transitions to browse after completion.
+// isRun=false → rdiff mode; isRun=true → run/deploy mode.
+func RunLiveTUI(
 	ctx context.Context,
 	target string,
+	isRun bool,
 	verbose bool,
 	level output.Level,
 	minfo *output.ManifestInfo,
 	runFn func(ctx context.Context) ([]cue.Result, time.Duration, error),
 ) error {
-	m := rdiffModel{target: target, verbose: verbose, minfo: minfo, width: 80, height: 24}
+	m := rdiffModel{target: target, verbose: verbose, minfo: minfo, isRun: isRun, width: 80, height: 24}
 	prog := tea.NewProgram(m, tea.WithAltScreen())
 
 	ctx = cue.WithPrePhase(ctx, func(steps []cue.StepInfo) {
@@ -987,7 +1088,7 @@ func RunLiveRdiffTUI(
 	}()
 
 	_, tuiErr := prog.Run()
-	rr := <-ch // wait for runner (may block briefly if user quit early)
+	rr := <-ch
 
 	if tuiErr != nil {
 		return tuiErr
@@ -996,4 +1097,28 @@ func RunLiveRdiffTUI(
 		fmt.Print(output.RenderTree(rr.results, target, rr.elapsed, true, verbose, level, minfo))
 	}
 	return rr.err
+}
+
+// RunRdiffTUI runs the interactive browse TUI for rdiff (post-check, no live phase).
+func RunRdiffTUI(results []cue.Result, target string, total time.Duration, verbose bool, level output.Level, minfo *output.ManifestInfo) error {
+	m := newLiveModel(results, target, total, verbose, minfo, false)
+	p := tea.NewProgram(m, tea.WithAltScreen())
+	_, err := p.Run()
+	if err != nil {
+		return err
+	}
+	fmt.Print(output.RenderTree(results, target, total, true, verbose, level, minfo))
+	return nil
+}
+
+// RunLiveRdiffTUI is kept for backwards compatibility; calls RunLiveTUI with isRun=false.
+func RunLiveRdiffTUI(
+	ctx context.Context,
+	target string,
+	verbose bool,
+	level output.Level,
+	minfo *output.ManifestInfo,
+	runFn func(ctx context.Context) ([]cue.Result, time.Duration, error),
+) error {
+	return RunLiveTUI(ctx, target, false, verbose, level, minfo, runFn)
 }
