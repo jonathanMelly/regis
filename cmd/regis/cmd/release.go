@@ -33,11 +33,9 @@ func newReleaseCommand(gf *GlobalFlags) *cobra.Command {
 		Short:   "list release snapshots on the target",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return withConn(gf, func(conn *regssh.Conn, tgt config.Target, cfg *config.Config) error {
-				if cfg.Release.Dir == "" {
-					return fmt.Errorf("release.dir not configured")
-				}
+				relDir := resolveReleaseDir(cfg, tgt)
 				stdout, _, _, err := conn.Run(fmt.Sprintf(
-					"cd %s && ls -dt v* 2>/dev/null || true", cfg.Release.Dir,
+					"cd %s && ls -dt v* 2>/dev/null || true", relDir,
 				))
 				if err != nil {
 					return err
@@ -85,10 +83,7 @@ func newReleaseCommand(gf *GlobalFlags) *cobra.Command {
 			Args:  cobra.MaximumNArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				return withConn(gf, func(conn *regssh.Conn, tgt config.Target, cfg *config.Config) error {
-					relDir := cfg.Release.Dir
-					if relDir == "" {
-						return fmt.Errorf("release.dir not configured")
-					}
+					relDir := resolveReleaseDir(cfg, tgt)
 					localDir := effectiveLocalDir(cfg)
 
 					var releaseID string
@@ -152,10 +147,7 @@ func newReleaseCommand(gf *GlobalFlags) *cobra.Command {
 		Short: "compare local snapshots vs remote release archive",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return withConn(gf, func(conn *regssh.Conn, tgt config.Target, cfg *config.Config) error {
-				relDir := cfg.Release.Dir
-				if relDir == "" {
-					return fmt.Errorf("release.dir not configured")
-				}
+				relDir := resolveReleaseDir(cfg, tgt)
 				localDir := effectiveLocalDir(cfg)
 
 				stdout, _, _, err := conn.Run(fmt.Sprintf(
@@ -253,10 +245,7 @@ func newReleaseCommand(gf *GlobalFlags) *cobra.Command {
 		Args: cobra.MaximumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return withConn(gf, func(conn *regssh.Conn, tgt config.Target, cfg *config.Config) error {
-				relDir := cfg.Release.Dir
-				if relDir == "" {
-					return fmt.Errorf("release.dir not configured")
-				}
+				relDir := resolveReleaseDir(cfg, tgt)
 
 				stdout, _, _, err := conn.Run(fmt.Sprintf(
 					"cd %s && ls -dt v* 2>/dev/null || true", relDir,
@@ -401,10 +390,7 @@ Flags:
 					var manifestData []byte
 					var manifestSrc string
 					if len(args) == 1 {
-						relDir := cfg.Release.Dir
-						if relDir == "" {
-							relDir = path.Join(tgt.Dir, ".regis-releases")
-						}
+						relDir := resolveReleaseDir(cfg, tgt)
 						remotePath := fmt.Sprintf("%s/%s/.regis-release", relDir, args[0])
 						data, dlErr := conn.Download(remotePath)
 						if dlErr != nil {
@@ -634,10 +620,7 @@ Flags:
 						runner.WriteSnapshot(localDir, releaseID, raw, nil)
 						fmt.Printf("snapshot  %s/%s\n", localDir, releaseID)
 
-						relDir := cfg.Release.Dir
-						if relDir == "" {
-							relDir = path.Join(tgt.Dir, ".regis-releases")
-						}
+						relDir := resolveReleaseDir(cfg, tgt)
 						archiveCmd := fmt.Sprintf("mkdir -p %s && cp -rp %s/. %s/%s/",
 							relDir, tgt.Dir, relDir, releaseID)
 						if _, stderr, code, archErr := conn.Run(archiveCmd); archErr != nil || code != 0 {
@@ -825,6 +808,15 @@ func shortHash(s string) string {
 		return s[:8]
 	}
 	return s
+}
+
+// resolveReleaseDir returns cfg.Release.Dir when set, or falls back to
+// <tgt.Dir>/.regis-releases — matching the default used by the runner.
+func resolveReleaseDir(cfg *config.Config, tgt config.Target) string {
+	if cfg.Release.Dir != "" {
+		return cfg.Release.Dir
+	}
+	return path.Join(tgt.Dir, ".regis-releases")
 }
 
 // withConn loads config, resolves target, dials SSH, and calls fn.
