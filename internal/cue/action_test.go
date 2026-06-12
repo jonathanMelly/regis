@@ -3,6 +3,8 @@ package cue_test
 
 import (
 	"context"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"git.disroot.org/jmy/regis/internal/config"
@@ -158,6 +160,69 @@ func TestActionExecutor_no_sudo_uses_RunWithEnv(t *testing.T) {
 	ex.Execute(context.Background(), mock, cr, config.Target{})
 	if mock.lastMethod != "RunWithEnv" {
 		t.Errorf("want RunWithEnv without sudo, got %q", mock.lastMethod)
+	}
+}
+
+// TestActionExecutor_remote_cd_prefix verifies that a remote shell is prefixed with
+// "cd '<dir>' && " so the command runs in target.Dir rather than the SSH home dir.
+func TestActionExecutor_remote_cd_prefix(t *testing.T) {
+	mock := &mockConnSudo{}
+	ex := cue.NewActionExecutor(mock)
+	cr := config.CueRef{Name: "restart", Nature: "action", Shell: "systemctl restart nginx"}
+	ex.Execute(context.Background(), mock, cr, config.Target{Dir: "/app"})
+	want := "cd '/app' && systemctl restart nginx"
+	if mock.lastCmd != want {
+		t.Errorf("remote cmd = %q, want %q", mock.lastCmd, want)
+	}
+}
+
+// TestActionExecutor_remote_sudo_cd_prefix verifies the same cd prefix for the sudo path.
+func TestActionExecutor_remote_sudo_cd_prefix(t *testing.T) {
+	mock := &mockConnSudo{}
+	ex := cue.NewActionExecutor(mock)
+	cr := config.CueRef{Name: "restart", Nature: "action", Shell: "systemctl restart nginx", Sudo: true}
+	ex.Execute(context.Background(), mock, cr, config.Target{Dir: "/app"})
+	if mock.lastMethod != "RunSudo" {
+		t.Fatalf("want RunSudo, got %q", mock.lastMethod)
+	}
+	want := "cd '/app' && systemctl restart nginx"
+	if mock.lastCmd != want {
+		t.Errorf("sudo cmd = %q, want %q", mock.lastCmd, want)
+	}
+}
+
+// TestActionExecutor_remote_no_dir_no_cd_prefix verifies that when target.Dir is empty
+// the shell is sent as-is (no spurious "cd  && " prepended).
+func TestActionExecutor_remote_no_dir_no_cd_prefix(t *testing.T) {
+	mock := &mockConnSudo{}
+	ex := cue.NewActionExecutor(mock)
+	cr := config.CueRef{Name: "check", Nature: "action", Shell: "which nginx"}
+	ex.Execute(context.Background(), mock, cr, config.Target{})
+	want := "which nginx"
+	if mock.lastCmd != want {
+		t.Errorf("cmd with empty Dir = %q, want %q", mock.lastCmd, want)
+	}
+}
+
+// TestActionExecutor_local_uses_local_dir verifies that a local action shell runs
+// with its CWD set to the directory stored in WithLocalDir (cfg.BaseDir).
+func TestActionExecutor_local_uses_local_dir(t *testing.T) {
+	dir := t.TempDir()
+	ex := cue.NewActionExecutor(nil)
+	cr := config.CueRef{Name: "pwd-check", Nature: "action", Shell: "pwd", Local: true}
+	ctx := cue.WithLocalDir(context.Background(), dir)
+	r, err := ex.Execute(ctx, nil, cr, config.Target{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Status == cue.StatusFailed {
+		t.Fatalf("unexpected failure: %v", r.Err)
+	}
+	// Resolve symlinks: macOS t.TempDir returns /var/… but pwd outputs /private/var/…
+	want, _ := filepath.EvalSymlinks(dir)
+	got, _ := filepath.EvalSymlinks(strings.TrimSpace(r.Stdout))
+	if got != want {
+		t.Errorf("local shell CWD = %q, want %q", got, want)
 	}
 }
 

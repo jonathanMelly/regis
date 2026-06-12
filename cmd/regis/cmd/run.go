@@ -41,6 +41,41 @@ func IsReservedScenarioName(name string) bool {
 	return reservedNames[name]
 }
 
+// ParseRunArgs splits a comma-separated run argument into scenario names and
+// scoped cue filters. Tokens of the form "scenario:cue" add the scenario to
+// the name list and record the cue under ScopedCues; plain tokens are scenario
+// names. Duplicate scenario names are collapsed. An error is returned for
+// malformed ":" tokens where either side is empty.
+func ParseRunArgs(arg string) (scenarioNames []string, scopedCues map[string][]string, err error) {
+	seen := make(map[string]bool)
+	for _, tok := range strings.Split(arg, ",") {
+		tok = strings.TrimSpace(tok)
+		if tok == "" {
+			continue
+		}
+		if idx := strings.IndexByte(tok, ':'); idx >= 0 {
+			scName, cueName := tok[:idx], tok[idx+1:]
+			if scName == "" || cueName == "" {
+				return nil, nil, fmt.Errorf("invalid filter %q — use scenario:cue format", tok)
+			}
+			if scopedCues == nil {
+				scopedCues = make(map[string][]string)
+			}
+			scopedCues[scName] = append(scopedCues[scName], cueName)
+			if !seen[scName] {
+				scenarioNames = append(scenarioNames, scName)
+				seen[scName] = true
+			}
+		} else {
+			if !seen[tok] {
+				scenarioNames = append(scenarioNames, tok)
+				seen[tok] = true
+			}
+		}
+	}
+	return
+}
+
 // ParseNatureFilter splits a comma-separated nature filter string.
 func ParseNatureFilter(s string) []string {
 	if s == "" {
@@ -108,12 +143,14 @@ func newRunCommand(gf *GlobalFlags) *cobra.Command {
 
 			// No explicit scenarios → run all in public-group-first order (same as score).
 			var scenarioNames []string
+			var scopedCues map[string][]string
 			if len(args) == 0 {
 				scenarioNames = score.SortedScenarioNames(cfg, "yaml")
 			} else {
-				scenarioNames = strings.Split(args[0], ",")
-				for i, name := range scenarioNames {
-					scenarioNames[i] = strings.TrimSpace(name)
+				var parseErr error
+				scenarioNames, scopedCues, parseErr = ParseRunArgs(args[0])
+				if parseErr != nil {
+					return parseErr
 				}
 				for _, name := range scenarioNames {
 					if strings.HasPrefix(name, ":") {
@@ -225,6 +262,7 @@ func newRunCommand(gf *GlobalFlags) *cobra.Command {
 					SkipConfirm:   gf.Yes,
 					NatureFilter:  ParseNatureFilter(nature),
 					PruneReleases: pruneReleases,
+					ScopedCues:    scopedCues,
 				},
 					dispatch, onResult)
 				spinner.Stop()

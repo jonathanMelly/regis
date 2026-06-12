@@ -51,7 +51,10 @@ func Validate(c *Config) []error {
 		updated := sc
 		for i, cr := range sc.Cues {
 			if cr.ScenarioRef != "" {
-				continue // references validated when resolved at runtime
+				if _, ok := c.Scenarios[cr.ScenarioRef]; !ok {
+					add("scenario %q: cue references undefined scenario %q", scName, cr.ScenarioRef)
+				}
+				continue
 			}
 			// Infer cue name from scenario name when the scenario has exactly one
 			// inline cue with no explicit name — single-cue scenarios are common enough
@@ -82,6 +85,20 @@ func Validate(c *Config) []error {
 
 			if cr.Rollback != nil && cr.Rollback.Defer && cr.Shell == "" {
 				add("scenario %q cue %q: rollback: defer requires a shell: command to re-run", scName, cr.Name)
+			}
+		}
+		for _, cr := range sc.Checks {
+			if cr.ScenarioRef != "" {
+				if _, ok := c.Scenarios[cr.ScenarioRef]; !ok {
+					add("scenario %q: check references undefined scenario %q", scName, cr.ScenarioRef)
+				}
+			}
+		}
+		for _, cr := range sc.Rollback {
+			if cr.ScenarioRef != "" {
+				if _, ok := c.Scenarios[cr.ScenarioRef]; !ok {
+					add("scenario %q: rollback references undefined scenario %q", scName, cr.ScenarioRef)
+				}
 			}
 		}
 		c.Scenarios[scName] = updated

@@ -20,11 +20,12 @@ import (
 type Options struct {
 	DryRun           bool
 	SkipConfirm      bool
-	NatureFilter     []string // empty = all natures
-	PruneReleases    bool     // prune old releases (remote + local) after a successful deploy
-	DeduplicateSteps bool     // drop duplicate (ScenarioName, CueName) steps — rdiff only
-	ScenarioFilter   []string // if non-empty, keep only steps whose ScenarioName is in this set — rdiff only
-	CueFilter        []string // if non-empty, keep only steps whose Name is in this set — rdiff only
+	NatureFilter     []string            // empty = all natures
+	PruneReleases    bool                // prune old releases (remote + local) after a successful deploy
+	DeduplicateSteps bool                // drop duplicate (ScenarioName, CueName) steps — rdiff only
+	ScenarioFilter   []string            // if non-empty, keep only steps whose ScenarioName is in this set — rdiff only
+	CueFilter        []string            // if non-empty, keep only steps whose Name is in this set — rdiff only
+	ScopedCues       map[string][]string // scenario → cue names; keep only those cues, error if any are not found
 }
 
 // Dispatch maps cue nature to executor.
@@ -89,6 +90,44 @@ func Run(ctx context.Context, cfg *config.Config, scenarioNames []string, target
 			deduped = append(deduped, s)
 		}
 		steps = deduped
+	}
+
+	if len(opts.ScopedCues) > 0 {
+		// Build the set of explicitly-requested scenario names so that topo-sorted
+		// dependency scenarios (not named by the caller) are NOT kept when scoped
+		// syntax is in use. Unscoped but explicitly-requested scenarios run fully;
+		// deps pulled in by topo-sort are dropped.
+		explicitScenarios := make(map[string]bool, len(scenarioNames))
+		for _, n := range scenarioNames {
+			explicitScenarios[n] = true
+		}
+		matched := make(map[string]bool)
+		filtered := make([]Step, 0, len(steps))
+		for _, s := range steps {
+			cues, ok := opts.ScopedCues[s.ScenarioName]
+			if !ok {
+				// Keep only if explicitly requested; drop topo-sorted deps.
+				if explicitScenarios[s.ScenarioName] {
+					filtered = append(filtered, s)
+				}
+				continue
+			}
+			for _, n := range cues {
+				if n == s.Name {
+					filtered = append(filtered, s)
+					matched[s.ScenarioName+"\x00"+n] = true
+					break
+				}
+			}
+		}
+		for scName, cues := range opts.ScopedCues {
+			for _, cueName := range cues {
+				if !matched[scName+"\x00"+cueName] {
+					return nil, fmt.Errorf("scenario %q has no cue %q", scName, cueName)
+				}
+			}
+		}
+		steps = filtered
 	}
 
 	if len(opts.ScenarioFilter) > 0 || len(opts.CueFilter) > 0 {
@@ -383,6 +422,7 @@ func expandScenarioRef(ref config.CueRef, cfg *config.Config, baseEnv map[string
 	}
 	sc, ok := cfg.Scenarios[ref.ScenarioRef]
 	if !ok {
+		// Unreachable after config.Validate — scenario ref existence is checked at load time.
 		return nil
 	}
 	var steps []Step

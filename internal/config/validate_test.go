@@ -167,6 +167,65 @@ func TestValidate_gitTrue_wrongNature_error(t *testing.T) {
 	}
 }
 
+func TestValidate_cueRef_undefined_scenario(t *testing.T) {
+	c := minimalCfg()
+	c.Scenarios["deploy"] = config.Scenario{
+		Cues: []config.CueRef{
+			{ScenarioRef: "typo-scenario"},
+		},
+	}
+	errs := config.Validate(c)
+	if len(errs) == 0 {
+		t.Fatal("expected error: cue references undefined scenario")
+	}
+	if !strings.Contains(errs[0].Error(), "typo-scenario") {
+		t.Errorf("error should name the undefined scenario, got: %v", errs[0])
+	}
+}
+
+func TestValidate_cueRef_valid_scenario(t *testing.T) {
+	c := minimalCfg()
+	c.Scenarios["base"] = config.Scenario{
+		Cues: []config.CueRef{{Name: "x", Nature: "action", Shell: "echo hi"}},
+	}
+	c.Scenarios["deploy"] = config.Scenario{
+		Cues: []config.CueRef{{ScenarioRef: "base"}},
+	}
+	if errs := config.Validate(c); len(errs) != 0 {
+		t.Errorf("expected no errors for valid scenario ref, got: %v", errs)
+	}
+}
+
+func TestValidate_checkRef_undefined_scenario(t *testing.T) {
+	c := minimalCfg()
+	c.Scenarios["deploy"] = config.Scenario{
+		Cues:   []config.CueRef{{Name: "x", Nature: "action", Shell: "echo hi"}},
+		Checks: []config.CueRef{{ScenarioRef: "no-such-scenario"}},
+	}
+	errs := config.Validate(c)
+	if len(errs) == 0 {
+		t.Fatal("expected error: check references undefined scenario")
+	}
+	if !strings.Contains(errs[0].Error(), "no-such-scenario") {
+		t.Errorf("error should name the undefined scenario, got: %v", errs[0])
+	}
+}
+
+func TestValidate_rollbackRef_undefined_scenario(t *testing.T) {
+	c := minimalCfg()
+	c.Scenarios["deploy"] = config.Scenario{
+		Cues:     []config.CueRef{{Name: "x", Nature: "action", Shell: "echo hi"}},
+		Rollback: []config.CueRef{{ScenarioRef: "no-such-scenario"}},
+	}
+	errs := config.Validate(c)
+	if len(errs) == 0 {
+		t.Fatal("expected error: rollback references undefined scenario")
+	}
+	if !strings.Contains(errs[0].Error(), "no-such-scenario") {
+		t.Errorf("error should name the undefined scenario, got: %v", errs[0])
+	}
+}
+
 func TestValidate_unknownRequires(t *testing.T) {
 	c := minimalCfg()
 	c.Scenarios["deploy"] = config.Scenario{

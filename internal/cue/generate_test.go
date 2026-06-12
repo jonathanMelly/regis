@@ -3,6 +3,8 @@ package cue_test
 
 import (
 	"context"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"git.disroot.org/jmy/regis/internal/config"
@@ -85,6 +87,27 @@ func TestGenerateExecutor_nonzero_exit_fails(t *testing.T) {
 	r, _ := ex.Execute(context.Background(), nil, cr, config.Target{})
 	if r.Status != cue.StatusFailed {
 		t.Errorf("non-zero exit must yield StatusFailed, got %v", r.Status)
+	}
+}
+
+// TestGenerateExecutor_uses_local_dir verifies that the generate shell runs with its
+// CWD set to the directory stored in WithLocalDir (cfg.BaseDir).
+func TestGenerateExecutor_uses_local_dir(t *testing.T) {
+	dir := t.TempDir()
+	ex := cue.NewGenerateExecutor()
+	cr := config.CueRef{Name: "pwd-gen", Nature: "generate", Shell: "pwd"}
+	ctx := cue.WithLocalDir(context.Background(), dir)
+	r, err := ex.Execute(ctx, nil, cr, config.Target{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Status == cue.StatusFailed {
+		t.Fatalf("unexpected failure: %v", r.Err)
+	}
+	want, _ := filepath.EvalSymlinks(dir)
+	got, _ := filepath.EvalSymlinks(strings.TrimSpace(r.Stdout))
+	if got != want {
+		t.Errorf("generate shell CWD = %q, want %q", got, want)
 	}
 }
 

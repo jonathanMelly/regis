@@ -4,6 +4,7 @@ package cmd_test
 import (
 	"strings"
 	"testing"
+
 	"git.disroot.org/jmy/regis/cmd/regis/cmd"
 )
 
@@ -37,6 +38,78 @@ func TestParseNatureFilter_s_shorthand(t *testing.T) {
 	natures := cmd.ParseNatureFilter("secret")
 	if len(natures) != 1 || natures[0] != "secret" {
 		t.Errorf("unexpected: %v", natures)
+	}
+}
+
+func TestParseRunArgs_plain_scenario(t *testing.T) {
+	names, scoped, err := cmd.ParseRunArgs("app,tasks")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 2 || names[0] != "app" || names[1] != "tasks" {
+		t.Errorf("want [app tasks], got %v", names)
+	}
+	if len(scoped) != 0 {
+		t.Errorf("want no scoped cues, got %v", scoped)
+	}
+}
+
+func TestParseRunArgs_scoped_cue(t *testing.T) {
+	names, scoped, err := cmd.ParseRunArgs("app:cfg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 1 || names[0] != "app" {
+		t.Errorf("want [app], got %v", names)
+	}
+	if cues := scoped["app"]; len(cues) != 1 || cues[0] != "cfg" {
+		t.Errorf("want scoped[app]=[cfg], got %v", scoped)
+	}
+}
+
+func TestParseRunArgs_mixed(t *testing.T) {
+	names, scoped, err := cmd.ParseRunArgs("app:cfg,tasks")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 2 {
+		t.Fatalf("want 2 scenario names, got %v", names)
+	}
+	if _, ok := scoped["app"]; !ok {
+		t.Error("want app in scoped cues")
+	}
+	if _, ok := scoped["tasks"]; ok {
+		t.Error("tasks should not be in scoped cues (unscoped scenario)")
+	}
+}
+
+func TestParseRunArgs_multi_cues_same_scenario(t *testing.T) {
+	names, scoped, err := cmd.ParseRunArgs("app:bin,app:cfg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 1 || names[0] != "app" {
+		t.Errorf("want deduplicated [app], got %v", names)
+	}
+	if cues := scoped["app"]; len(cues) != 2 {
+		t.Errorf("want 2 cues for app, got %v", cues)
+	}
+}
+
+func TestParseRunArgs_malformed_missing_cue(t *testing.T) {
+	_, _, err := cmd.ParseRunArgs("app:")
+	if err == nil {
+		t.Error("expected error for 'app:' (missing cue name)")
+	}
+	if !strings.Contains(err.Error(), "app:") {
+		t.Errorf("error should mention the bad token, got: %v", err)
+	}
+}
+
+func TestParseRunArgs_malformed_missing_scenario(t *testing.T) {
+	_, _, err := cmd.ParseRunArgs(":cue")
+	if err == nil {
+		t.Error("expected error for ':cue' (missing scenario name)")
 	}
 }
 

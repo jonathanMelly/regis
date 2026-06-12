@@ -61,11 +61,25 @@ func BuildManifest(releaseID string, scenarios []string, results []cue.Result, s
 		checksums = nil
 	}
 
+	// Index results by cue name so artifact recording can skip failed cues.
+	// A cue that failed with continue_on_error: true never successfully deployed
+	// its file — recording it as an artifact would cause rollback to restore a
+	// version that was never live.
+	failedCues := make(map[string]bool, len(results))
+	for _, r := range results {
+		if r.Status == cue.StatusFailed {
+			failedCues[r.CueName] = true
+		}
+	}
+
 	artifacts := make(map[string]string)
 	cueArtifacts := make(map[string]map[string]string)
 
 	// Pack cues: use ArtifactPaths populated by the executor (cueName/relpath → remote).
 	for _, r := range results {
+		if failedCues[r.CueName] {
+			continue
+		}
 		if len(r.ArtifactPaths) > 0 {
 			cueArtifacts[r.CueName] = r.ArtifactPaths
 			for _, remotePath := range r.ArtifactPaths {
@@ -78,7 +92,7 @@ func BuildManifest(releaseID string, scenarios []string, results []cue.Result, s
 
 	for _, step := range steps {
 		cr := step.CueRef
-		if cr.Dest == "" {
+		if cr.Dest == "" || failedCues[cr.Name] {
 			continue
 		}
 		switch cr.Nature {

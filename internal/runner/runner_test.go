@@ -3,6 +3,7 @@ package runner_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"git.disroot.org/jmy/regis/internal/config"
@@ -141,6 +142,138 @@ func TestRun_generateAlwaysRunsInDryRun(t *testing.T) {
 	if !genCalled {
 		t.Error("generate executor must be called even in dry-run")
 	}
+}
+
+func TestRun_scopedCues_single(t *testing.T) {
+	cfg := &config.Config{
+		Targets: []config.Target{{Name: "prod", Host: "h", User: "u", Dir: "/opt"}},
+		Scenarios: map[string]config.Scenario{
+			"app": {Cues: []config.CueRef{
+				{Name: "bin", Nature: "binary"},
+				{Name: "cfg", Nature: "config"},
+			}},
+		},
+		ScenarioNames: []string{"app"},
+	}
+	ex := &mockExec{"binary", cue.StatusChanged}
+	dispatch := runner.Dispatch{
+		Binary: ex,
+		Config: &mockExec{"config", cue.StatusEqual},
+	}
+	result, err := runner.Run(context.Background(), cfg, []string{"app"}, cfg.Targets[0],
+		runner.Options{DryRun: true, ScopedCues: map[string][]string{"app": {"bin"}}},
+		dispatch, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Results) != 1 {
+		t.Fatalf("want 1 result (only bin), got %d", len(result.Results))
+	}
+	if result.Results[0].CueName != "bin" {
+		t.Errorf("want bin, got %q", result.Results[0].CueName)
+	}
+}
+
+func TestRun_scopedCues_unknown_cue_errors(t *testing.T) {
+	cfg := &config.Config{
+		Targets: []config.Target{{Name: "prod", Host: "h", User: "u", Dir: "/opt"}},
+		Scenarios: map[string]config.Scenario{
+			"app": {Cues: []config.CueRef{
+				{Name: "bin", Nature: "binary"},
+			}},
+		},
+		ScenarioNames: []string{"app"},
+	}
+	dispatch := runner.Dispatch{Binary: &mockExec{"binary", cue.StatusEqual}}
+	_, err := runner.Run(context.Background(), cfg, []string{"app"}, cfg.Targets[0],
+		runner.Options{DryRun: true, ScopedCues: map[string][]string{"app": {"typo"}}},
+		dispatch, nil)
+	if err == nil {
+		t.Fatal("expected error for unknown cue name")
+	}
+	if !strings.Contains(err.Error(), "typo") {
+		t.Errorf("error should name the missing cue, got: %v", err)
+	}
+}
+
+func TestRun_scopedCues_unscoped_scenarios_run_fully(t *testing.T) {
+	// "app" is scoped to only "bin"; "tasks" is unscoped and all its cues must run.
+	cfg := &config.Config{
+		Targets: []config.Target{{Name: "prod", Host: "h", User: "u", Dir: "/opt"}},
+		Scenarios: map[string]config.Scenario{
+			"app": {Cues: []config.CueRef{
+				{Name: "bin", Nature: "binary"},
+				{Name: "cfg", Nature: "config"},
+			}},
+			"tasks": {Cues: []config.CueRef{
+				{Name: "gen", Nature: "generate"},
+			}},
+		},
+		ScenarioNames: []string{"app", "tasks"},
+	}
+	dispatch := runner.Dispatch{
+		Binary:   &mockExec{"binary", cue.StatusChanged},
+		Config:   &mockExec{"config", cue.StatusEqual},
+		Generate: &mockExec{"generate", cue.StatusEqual},
+	}
+	result, err := runner.Run(context.Background(), cfg, []string{"app", "tasks"}, cfg.Targets[0],
+		runner.Options{DryRun: true, ScopedCues: map[string][]string{"app": {"bin"}}},
+		dispatch, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// bin from app + gen from tasks (cfg filtered out, tasks unscoped)
+	if len(result.Results) != 2 {
+		t.Fatalf("want 2 results (bin + gen), got %d: %v",
+			len(result.Results), cueNames(result.Results))
+	}
+}
+
+func TestRun_scopedCues_drops_topo_deps(t *testing.T) {
+	// "deploy" requires "base". Running deploy:act should not execute base's cues.
+	cfg := &config.Config{
+		Targets: []config.Target{{Name: "prod", Host: "h", User: "u", Dir: "/opt"}},
+		Scenarios: map[string]config.Scenario{
+			"base": {Cues: []config.CueRef{
+				{Name: "setup", Nature: "binary"},
+			}},
+			"deploy": {
+				Requires: config.StringOrList{"base"},
+				Cues: []config.CueRef{
+					{Name: "act", Nature: "action", Shell: "echo deploy"},
+					{Name: "bin", Nature: "binary"},
+				},
+			},
+		},
+		ScenarioNames: []string{"base", "deploy"},
+	}
+	dispatch := runner.Dispatch{
+		Binary: &mockExec{"binary", cue.StatusEqual},
+		Action: &mockExec{"action", cue.StatusChanged},
+	}
+	result, err := runner.Run(context.Background(), cfg, []string{"deploy"}, cfg.Targets[0],
+		runner.Options{DryRun: true, ScopedCues: map[string][]string{"deploy": {"act"}}},
+		dispatch, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	names := cueNames(result.Results)
+	for _, n := range names {
+		if n == "setup" {
+			t.Errorf("topo dep cue %q should not run with scoped syntax, got results: %v", n, names)
+		}
+	}
+	if len(result.Results) != 1 || result.Results[0].CueName != "act" {
+		t.Errorf("want only [act], got %v", names)
+	}
+}
+
+func cueNames(results []cue.Result) []string {
+	names := make([]string, len(results))
+	for i, r := range results {
+		names[i] = r.CueName
+	}
+	return names
 }
 
 func TestRun_natureFilter_empty_runsAll(t *testing.T) {
