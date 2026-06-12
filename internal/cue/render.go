@@ -135,31 +135,24 @@ func (e *RenderExecutor) executeFile(ctx context.Context, cr config.CueRef, targ
 	}
 
 	remotePath := JoinRemotePath(e.conn, target.Dir, cr.Dest)
-	var remoteData []byte
-	if !RemoteFilesKnown(ctx) || RemoteFileExists(ctx, remotePath) {
-		remoteData, _ = e.conn.Download(remotePath)
-	}
 
-	// Binary content: MD5 comparison; text content: unified diff.
-	if isBinaryContent(localData) || isBinaryContent(remoteData) {
-		lmd5 := localHashBytes(localData)
-		rmd5 := localHashBytes(remoteData)
-		if lmd5 == rmd5 {
-			r.Status = StatusEqual
-			r.Elapsed = time.Since(start)
-			return r, nil
-		}
-		r.Diff = fmt.Sprintf("binary changed  remote:%s  rendered:%s", truncateHash(rmd5), truncateHash(lmd5))
+	// Compare by remote hash — avoids downloading the rendered file.
+	// Rendered output is generated; a text diff of remote vs. local is not meaningful.
+	lmd5 := localHashBytes(localData)
+	remoteMissing := RemoteFilesKnown(ctx) && !RemoteFileExists(ctx, remotePath)
+	var remoteHash string
+	if !remoteMissing {
+		remoteHash, _ = HashRemote(e.conn, remotePath)
+	}
+	if !remoteMissing && remoteHash != "" && lmd5 == remoteHash {
+		r.Status = StatusEqual
+		r.Elapsed = time.Since(start)
+		return r, nil
+	}
+	if remoteMissing {
+		r.Diff = fmt.Sprintf("new file  rendered:%s", truncateHash(lmd5))
 	} else {
-		fromLabel := "remote: " + remotePath
-		toLabel := "rendered: " + cr.Dest
-		diff, changed := TextDiff(string(localData), string(remoteData), fromLabel, toLabel)
-		if !changed {
-			r.Status = StatusEqual
-			r.Elapsed = time.Since(start)
-			return r, nil
-		}
-		r.Diff = diff
+		r.Diff = fmt.Sprintf("changed  remote:%s  rendered:%s", truncateHash(remoteHash), truncateHash(lmd5))
 	}
 
 	if IsDryRun(ctx) {
@@ -227,6 +220,16 @@ func (e *RenderExecutor) executeFolder(ctx context.Context, cr config.CueRef, ta
 		return r, nil
 	}
 
+	// Bulk-prefetch remote hashes for all rendered files — avoids per-file downloads.
+	var remotePaths []string
+	for _, lf := range localFiles {
+		rp := remoteDest + lf.relPath
+		if !RemoteFilesKnown(ctx) || RemoteFileExists(ctx, rp) {
+			remotePaths = append(remotePaths, rp)
+		}
+	}
+	remoteHashes := BulkHashRemote(e.conn, remotePaths)
+
 	var changedNames []string
 	var totalSize int64
 	var diffBuf strings.Builder
@@ -245,26 +248,20 @@ func (e *RenderExecutor) executeFolder(ctx context.Context, cr config.CueRef, ta
 			return r, nil
 		}
 
-		var remoteData []byte
-		if !RemoteFilesKnown(ctx) || RemoteFileExists(ctx, remoteFilePath) {
-			remoteData, _ = e.conn.Download(remoteFilePath)
-		}
+		lmd5 := localHashBytes(localData)
+		remoteHash := remoteHashes[remoteFilePath]
+		remoteMissing := RemoteFilesKnown(ctx) && !RemoteFileExists(ctx, remoteFilePath)
 
 		var fileChanged bool
-		if isBinaryContent(localData) || isBinaryContent(remoteData) {
-			lmd5 := localHashBytes(localData)
-			rmd5 := localHashBytes(remoteData)
-			fileChanged = lmd5 != rmd5
-			if fileChanged {
-				fmt.Fprintf(&diffBuf, "binary %s  remote:%s  rendered:%s\n",
-					lf.relPath, truncateHash(rmd5), truncateHash(lmd5))
-			}
+		if !remoteMissing && remoteHash != "" && lmd5 == remoteHash {
+			// equal
 		} else {
-			diff, changed := TextDiff(string(localData), string(remoteData),
-				"remote:"+lf.relPath, "rendered:"+lf.relPath)
-			fileChanged = changed
-			if changed {
-				diffBuf.WriteString(diff)
+			fileChanged = true
+			if remoteMissing || remoteHash == "" {
+				fmt.Fprintf(&diffBuf, "new %s  rendered:%s\n", lf.relPath, truncateHash(lmd5))
+			} else {
+				fmt.Fprintf(&diffBuf, "changed %s  remote:%s  rendered:%s\n",
+					lf.relPath, truncateHash(remoteHash), truncateHash(lmd5))
 			}
 		}
 

@@ -112,8 +112,8 @@ Optional filter: comma-separated scenario or cue names to check a subset.
 				spinner.Start()
 
 				rawConn, dialErr := regssh.Dial(tgt)
-				if gf.Debug && dialErr != nil {
-					fmt.Fprintf(os.Stderr, "[debug] dial error: %v\n", dialErr)
+				if dialErr != nil {
+					fmt.Fprintf(os.Stderr, "warn: SSH connect to %s failed: %v\n", tgtName, dialErr)
 				}
 				var conn cue.SSHConn
 				if rawConn != nil {
@@ -162,6 +162,7 @@ Optional filter: comma-separated scenario or cue names to check a subset.
 
 				env, _ := config.BuildEnvForTarget(cfg, &tgt)
 				dispatch := runner.Dispatch{
+					BulkConn: conn,
 					Binary:   cue.NewBinaryExecutor(conn),
 					Config:   cue.NewConfigExecutor(conn, env),
 					Secret:   cue.NewSecretExecutor(conn),

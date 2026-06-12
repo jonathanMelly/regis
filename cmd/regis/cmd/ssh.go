@@ -30,9 +30,11 @@ func newSSHCommand(gf *GlobalFlags) *cobra.Command {
 				return fmt.Errorf("no targets matched")
 			}
 			var tgt config.Target
-			for _, t := range cfg.Targets {
-				if t.Name == selected[0] {
-					tgt = t
+			for i := range cfg.Targets {
+				if cfg.Targets[i].Name == selected[0] {
+					_ = config.InterpolateForTarget(cfg, &cfg.Targets[i])
+					tgt = cfg.Targets[i]
+					break
 				}
 			}
 			port := 22

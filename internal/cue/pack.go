@@ -131,6 +131,78 @@ func (e *PackExecutor) Execute(ctx context.Context, conn SSHConn, cr config.CueR
 		diffMode = "binary"
 	}
 
+	// Bulk-prefetch remote stats and MD5 hashes in at most two SSH calls —
+	// one stat for all paths, one md5sum for those where mtime/size differs.
+	// This avoids per-file SFTP downloads for change detection.
+	type packRStat struct {
+		missing    bool
+		mtimeMatch bool   // mtime+size matched local — equal without hashing
+		hash       string // MD5 hex; empty when mtimeMatch or hashing unavailable
+	}
+	packStats := make(map[string]packRStat, len(srcs))
+	{
+		type packEntry struct{ localPath, remotePath string }
+		entryMap := make(map[string]packEntry, len(srcs))
+		var toStat []string
+		for _, sf := range srcs {
+			rel := remoteRelPath(sf.path, sf.pattern)
+			if strings.HasPrefix(rel, ".regis-pack-") {
+				continue
+			}
+			rp := remoteDest + sep + strings.ReplaceAll(rel, "/", sep)
+			entryMap[rp] = packEntry{sf.path, rp}
+			if RemoteFilesKnown(ctx) && !RemoteFileExists(ctx, rp) {
+				packStats[rp] = packRStat{missing: true}
+			} else {
+				toStat = append(toStat, rp)
+			}
+		}
+		var toHash []string
+		if len(toStat) > 0 {
+			for rp, rs := range BulkStatRemote(e.conn, toStat) {
+				if rs.Size < 0 {
+					// stat returned but flagged absent — fall through to hash to confirm.
+					toHash = append(toHash, rp)
+					packStats[rp] = packRStat{}
+					continue
+				}
+				ent := entryMap[rp]
+				fi, err := os.Stat(ent.localPath)
+				if err == nil && rs.Mtime.Unix() == fi.ModTime().Unix() && rs.Size == fi.Size() {
+					packStats[rp] = packRStat{mtimeMatch: true}
+				} else {
+					toHash = append(toHash, rp)
+					packStats[rp] = packRStat{} // hash filled by BulkHashRemote below
+				}
+			}
+			// Paths not returned by BulkStatRemote: stat failed or file absent.
+			// Use BulkHashRemote to confirm rather than declaring missing immediately.
+			for _, rp := range toStat {
+				if _, seen := packStats[rp]; !seen {
+					toHash = append(toHash, rp)
+					packStats[rp] = packRStat{}
+				}
+			}
+		}
+		if len(toHash) > 0 {
+			hashResult := BulkHashRemote(e.conn, toHash)
+			for rp, h := range hashResult {
+				ps := packStats[rp]
+				ps.hash = h
+				packStats[rp] = ps
+			}
+			// BulkHashRemote returned some results → md5sum is available.
+			// Any path still without a hash is genuinely absent on the remote.
+			if len(hashResult) > 0 {
+				for _, rp := range toHash {
+					if ps := packStats[rp]; ps.hash == "" && !ps.mtimeMatch {
+						packStats[rp] = packRStat{missing: true}
+					}
+				}
+			}
+		}
+	}
+
 	var changedNames []string
 	var totalSize int64
 	var diffBuf strings.Builder
@@ -156,60 +228,63 @@ func (e *PackExecutor) Execute(ctx context.Context, conn SSHConn, cr config.CueR
 			return r, nil
 		}
 
-		// Skip the download when we know the file is absent on the target.
-		var remoteData []byte
-		remoteMissing := RemoteFilesKnown(ctx) && !RemoteFileExists(ctx, remotePath)
-		if !remoteMissing {
-			remoteData, _ = e.conn.Download(remotePath)
-			if remoteData == nil {
-				remoteMissing = true
-			}
-		}
+		ps := packStats[remotePath]
+		remoteMissing := ps.missing
+		lmd5 := localHashBytes(localData)
 
-		remoteLabel := func(rmd5 string) string {
+		remoteLabel := func(h string) string {
 			if remoteMissing {
 				return "missing"
 			}
-			return truncateHash(rmd5)
+			return truncateHash(h)
 		}
 
 		var fileChanged bool
 		switch diffMode {
 		case "text":
+			// Fast path: mtime or hash match → equal, no download needed.
+			if !remoteMissing && (ps.mtimeMatch || (ps.hash != "" && ps.hash == lmd5)) {
+				break
+			}
+			// Download only when the file is actually different (or missing).
+			var remoteContent string
 			remoteStr := "remote:" + rel
 			if remoteMissing {
 				remoteStr = "(missing)"
+			} else {
+				remoteData, _ := e.conn.Download(remotePath)
+				remoteContent = string(remoteData)
 			}
-			diff, changed := TextDiff(string(localData), string(remoteData), remoteStr, "local:"+rel)
+			diff, changed := TextDiff(string(localData), remoteContent, remoteStr, "local:"+rel)
 			fileChanged = changed || remoteMissing
 			if fileChanged {
 				diffBuf.WriteString(diff)
 			}
 		case "auto":
-			if isBinaryContent(localData) || (!remoteMissing && isBinaryContent(remoteData)) {
-				lmd5 := localHashBytes(localData)
-				rmd5 := localHashBytes(remoteData)
-				fileChanged = remoteMissing || lmd5 != rmd5
+			// Fast path: equal by mtime or hash.
+			if !remoteMissing && (ps.mtimeMatch || (ps.hash != "" && ps.hash == lmd5)) {
+				break
+			}
+			if remoteMissing || isBinaryContent(localData) {
+				// Binary or missing: hash comparison only, no download.
+				fileChanged = remoteMissing || lmd5 != ps.hash
 				if fileChanged {
-					fmt.Fprintf(&diffBuf, "binary %s  remote:%s  local:%s\n", rel, remoteLabel(rmd5), truncateHash(lmd5))
+					fmt.Fprintf(&diffBuf, "binary %s  remote:%s  local:%s\n", rel, remoteLabel(ps.hash), truncateHash(lmd5))
 				}
 			} else {
+				// Text content and files differ: download only for diff output.
+				remoteData, _ := e.conn.Download(remotePath)
 				remoteStr := "remote:" + rel
-				if remoteMissing {
-					remoteStr = "(missing)"
-				}
 				diff, changed := TextDiff(string(localData), string(remoteData), remoteStr, "local:"+rel)
-				fileChanged = changed || remoteMissing
+				fileChanged = changed
 				if fileChanged {
 					diffBuf.WriteString(diff)
 				}
 			}
 		default: // "binary"
-			lmd5 := localHashBytes(localData)
-			rmd5 := localHashBytes(remoteData)
-			fileChanged = remoteMissing || lmd5 != rmd5
+			fileChanged = remoteMissing || (!ps.mtimeMatch && lmd5 != ps.hash)
 			if fileChanged {
-				fmt.Fprintf(&diffBuf, "binary %s  remote:%s  local:%s\n", rel, remoteLabel(rmd5), truncateHash(lmd5))
+				fmt.Fprintf(&diffBuf, "binary %s  remote:%s  local:%s\n", rel, remoteLabel(ps.hash), truncateHash(lmd5))
 			}
 		}
 
@@ -244,6 +319,9 @@ func (e *PackExecutor) Execute(ctx context.Context, conn SSHConn, cr config.CueR
 			r.Err = fmt.Errorf("upload %s: %w", rel, err)
 			r.Elapsed = time.Since(start)
 			return r, nil
+		}
+		if fi, statErr := os.Stat(sf.path); statErr == nil {
+			SetRemoteMtime(e.conn, remotePath, fi.ModTime())
 		}
 		totalSize += int64(len(localData))
 	}

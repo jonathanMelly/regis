@@ -58,65 +58,95 @@ func StatRemote(conn SSHConn, remotePath string) (time.Time, int64) {
 	return parseStatLine(strings.TrimSpace(stdout))
 }
 
-// BulkStatRemote fetches mtime and size for multiple remote paths in one SSH call.
+// bulkBatchSize is the maximum number of paths per SSH stat/hash command.
+// SSH channels typically cap payload at ~32 KB; 100 paths with 50-char names ≈ 5 KB.
+const bulkBatchSize = 100
+
+// BulkStatRemote fetches mtime and size for multiple remote paths.
+// Paths are batched so each SSH call stays well under the channel payload limit.
 // Returns a map of remotePath → RemoteStat. Missing paths are absent from the map.
 func BulkStatRemote(conn SSHConn, paths []string) map[string]RemoteStat {
 	if len(paths) == 0 {
 		return nil
 	}
-	args := joinQuoted(paths)
-	stdout, _, _, _ := conn.Run("stat -c '%Y %s %n' " + args + " 2>/dev/null")
-	if strings.TrimSpace(stdout) == "" {
-		stdout, _, _, _ = conn.Run("stat -f '%m %z %N' " + args + " 2>/dev/null")
-	}
 	result := make(map[string]RemoteStat, len(paths))
-	for _, line := range strings.Split(stdout, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
+	for i := 0; i < len(paths); i += bulkBatchSize {
+		batch := paths[i:min(i+bulkBatchSize, len(paths))]
+		args := joinQuoted(batch)
+		stdout, _, _, err := conn.Run("stat -c '%Y %s %n' " + args + " 2>/dev/null")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warn: remote stat failed: %v\n", err)
 			continue
 		}
-		// format: "EPOCH SIZE PATHNAME" — split on first two spaces
-		parts := strings.SplitN(line, " ", 3)
-		if len(parts) < 3 {
-			continue
+		if strings.TrimSpace(stdout) == "" {
+			stdout, _, _, err = conn.Run("stat -f '%m %z %N' " + args + " 2>/dev/null")
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "warn: remote stat failed: %v\n", err)
+				continue
+			}
 		}
-		mtime, size := parseStatLine(parts[0] + " " + parts[1])
-		if mtime.IsZero() {
-			continue
+		for _, line := range strings.Split(stdout, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			// format: "EPOCH SIZE PATHNAME" — split on first two spaces
+			parts := strings.SplitN(line, " ", 3)
+			if len(parts) < 3 {
+				continue
+			}
+			mtime, size := parseStatLine(parts[0] + " " + parts[1])
+			if mtime.IsZero() {
+				continue
+			}
+			result[parts[2]] = RemoteStat{Mtime: mtime, Size: size}
 		}
-		result[parts[2]] = RemoteStat{Mtime: mtime, Size: size}
 	}
 	return result
 }
 
-// BulkHashRemote fetches hashes for multiple remote paths in one md5sum call.
+// BulkHashRemote fetches MD5 hashes for multiple remote paths.
+// Paths are batched so each SSH call stays well under the channel payload limit.
 // Returns a map of remotePath → hash. Missing or errored paths are absent.
-// Falls back silently when md5sum is unavailable (e.g. macOS targets).
 func BulkHashRemote(conn SSHConn, paths []string) map[string]string {
 	if len(paths) == 0 {
 		return nil
 	}
-	args := joinQuoted(paths)
-	stdout, _, _, _ := conn.Run("md5sum " + args + " 2>/dev/null")
 	result := make(map[string]string, len(paths))
-	for _, line := range strings.Split(stdout, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
+	for i := 0; i < len(paths); i += bulkBatchSize {
+		batch := paths[i:min(i+bulkBatchSize, len(paths))]
+		args := joinQuoted(batch)
+		stdout, _, _, err := conn.Run("md5sum " + args + " 2>/dev/null")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warn: remote md5sum failed: %v\n", err)
 			continue
 		}
-		// md5sum format: "HASH  PATH" or "HASH PATH"
-		idx := strings.IndexByte(line, ' ')
-		if idx < 0 {
-			continue
+		for _, line := range strings.Split(stdout, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			// md5sum format: "HASH  PATH" or "HASH PATH"
+			idx := strings.IndexByte(line, ' ')
+			if idx < 0 {
+				continue
+			}
+			hash := line[:idx]
+			path := strings.TrimLeft(line[idx:], " ")
+			if path == "" || hash == "" {
+				continue
+			}
+			result[path] = hash
 		}
-		hash := line[:idx]
-		path := strings.TrimLeft(line[idx:], " ")
-		if path == "" || hash == "" {
-			continue
-		}
-		result[path] = hash
 	}
 	return result
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // SetRemoteMtime sets the mtime of remotePath to t using touch -d @epoch (GNU/Linux).

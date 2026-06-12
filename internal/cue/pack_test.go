@@ -3,6 +3,8 @@ package cue_test
 
 import (
 	"context"
+	"crypto/md5"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +14,30 @@ import (
 	"git.disroot.org/jmy/regis/internal/config"
 	"git.disroot.org/jmy/regis/internal/cue"
 )
+
+// packEqualRun returns a runFunc that simulates BulkStatRemote + BulkHashRemote for
+// the given remote path → content map, producing "equal" results (hash matches).
+// Stat intentionally returns mtime=0 so the hash branch is always exercised.
+func packEqualRun(remotes map[string][]byte) func(string) (string, string, int, error) {
+	return func(cmd string) (string, string, int, error) {
+		if strings.Contains(cmd, "stat") {
+			var sb strings.Builder
+			for path, data := range remotes {
+				fmt.Fprintf(&sb, "0 %d %s\n", len(data), path)
+			}
+			return sb.String(), "", 0, nil
+		}
+		if strings.Contains(cmd, "md5sum") {
+			var sb strings.Builder
+			for path, data := range remotes {
+				h := md5.Sum(data)
+				fmt.Fprintf(&sb, "%x  %s\n", h, path)
+			}
+			return sb.String(), "", 0, nil
+		}
+		return "", "", 0, nil
+	}
+}
 
 // ---- helper unit tests (pure functions via exported wrappers) ----------------
 
@@ -119,13 +145,7 @@ func TestPackExecutor_noChanges(t *testing.T) {
 	os.WriteFile(dir+"/index.html", content, 0644)
 
 	mock := &mockConn{
-		downloads: map[string][]byte{
-			"/www/index.html": content, // remote matches local → no change
-		},
-		runFunc: func(cmd string) (string, string, int, error) {
-			// manifest write: UploadBytes is used, not Run
-			return "", "", 0, nil
-		},
+		runFunc: packEqualRun(map[string][]byte{"/www/index.html": content}),
 	}
 
 	ex := cue.NewPackExecutor(mock)
@@ -444,8 +464,7 @@ func TestPackExecutor_gitTrue_showsCommitHash_equal(t *testing.T) {
 	chdirTemp(t, dir)
 
 	mock := &mockConn{
-		downloads: map[string][]byte{"/www/index.html": []byte("content")}, // remote matches
-		runFunc:   func(cmd string) (string, string, int, error) { return "", "", 0, nil },
+		runFunc: packEqualRun(map[string][]byte{"/www/index.html": []byte("content")}),
 	}
 	ex := cue.NewPackExecutor(mock)
 	cr := config.CueRef{Name: "app", Nature: "pack", Git: true, Dest: "/www"}

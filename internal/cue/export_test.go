@@ -8,6 +8,9 @@ import (
 	"git.disroot.org/jmy/regis/internal/config"
 )
 
+// BulkBatchSize exposes bulkBatchSize so tests can build inputs that cross batch boundaries.
+const BulkBatchSize = bulkBatchSize
+
 // PackCandidate is the exported alias of the internal packCandidate type.
 type PackCandidate = packCandidate
 

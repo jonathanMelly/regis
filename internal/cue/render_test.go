@@ -3,6 +3,7 @@ package cue_test
 
 import (
 	"context"
+	"crypto/md5"
 	"fmt"
 	"io/fs"
 	"os"
@@ -69,10 +70,20 @@ func (m *mockRenderConn) Run(cmd string) (string, string, int, error) {
 	}
 	if strings.HasPrefix(cmd, "rm -f ") {
 		path := strings.TrimSpace(strings.TrimPrefix(cmd, "rm -f "))
-		// strip shell quotes if present
 		path = strings.Trim(path, "'")
 		m.deletedPaths = append(m.deletedPaths, path)
 		return "", "", 0, nil
+	}
+	// md5sum / md5 -q: return hashes for files in remoteFiles.
+	if strings.Contains(cmd, "md5sum") || strings.Contains(cmd, "md5 -q") {
+		var sb strings.Builder
+		for path, data := range m.remoteFiles {
+			if strings.Contains(cmd, "'"+path+"'") || strings.Contains(cmd, path) {
+				h := md5.Sum(data)
+				fmt.Fprintf(&sb, "%x  %s\n", h, path)
+			}
+		}
+		return sb.String(), "", 0, nil
 	}
 	return "", "", 0, nil
 }

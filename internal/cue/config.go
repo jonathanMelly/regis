@@ -121,6 +121,9 @@ func (e *ConfigExecutor) executeSingle(ctx context.Context, cr config.CueRef, ta
 		r.Elapsed = time.Since(start)
 		return r, nil
 	}
+	if fi, statErr := os.Stat(localPath); statErr == nil {
+		SetRemoteMtime(e.conn, remotePath, fi.ModTime())
+	}
 
 	r.Status = StatusChanged
 	r.Size = int64(len(localContent))
@@ -212,6 +215,9 @@ func (e *ConfigExecutor) executeMulti(ctx context.Context, cr config.CueRef, tar
 			r.Err = fmt.Errorf("upload %s: %w", localPath, err)
 			r.Elapsed = time.Since(start)
 			return r, nil
+		}
+		if fi, statErr := os.Stat(localPath); statErr == nil {
+			SetRemoteMtime(e.conn, remotePath, fi.ModTime())
 		}
 		totalSize += int64(len(localContent))
 	}

@@ -82,6 +82,9 @@ func (e *ServiceExecutor) Execute(ctx context.Context, _ SSHConn, cr config.CueR
 			r.Elapsed = time.Since(start)
 			return r, nil
 		}
+		if fi, statErr := os.Stat(cr.ServiceFile); statErr == nil {
+			SetRemoteMtime(e.conn, remotePath, fi.ModTime())
+		}
 		r.Size = int64(len(rendered))
 	}
 
