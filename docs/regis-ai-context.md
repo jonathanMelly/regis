@@ -223,7 +223,7 @@ rollback: "cmd" or {shell, sudo} — runs a compensation command on the remote w
 
 ### binary
 
-Uploads a compiled executable. Change detection via MD5.
+Uploads a compiled executable. Change detection: mtime+size fast path, hash fallback.
 Atomic upload: copies to <dest>.new, then mv. Direction: local→remote.
 rollback: true — restores the previous binary from the local release snapshot.
 
@@ -422,6 +422,83 @@ Narrowing: `{ scenario: app, cue: source }` runs only the named cue; `{ scenario
 
 ---
 
+## Mixed regis + manual deployments
+
+These scenarios arise whenever files reach the target outside of a normal `regis run` — emergency
+hotfixes, manual uploads, a partial deploy that failed mid-way, or a first-time bootstrap.
+The release manifest (`.regis-release` in `target.dir`) may then be missing, incomplete, or describe
+a different set of files than what is actually on the target.
+
+**Why it matters** — rdiff uses the manifest's recorded hashes for fast drift detection. A stale
+manifest causes false drift alerts or hides real ones. Rollback restores files from the remote
+archive, which is consistent with the manifest at archive time; a rebuild creates a new archive
+from the current target state so future rollbacks land in a known-good place.
+
+#### Diagnosis — `release check`
+
+```
+regis release check          # compare live manifest hashes against actual remote files
+regis release check v20260601-120000  # compare a historical manifest instead
+```
+
+Output per cue:
+```
+  =  hash matches
+  ~  hash differs (drift or partial deploy)
+  ?  file exists on target but not tracked in manifest
+  *  render file — exists, hash not recorded by manifest
+  -  dest missing on target
+```
+
+#### Remediation options
+
+**1. Rebuild the manifest** (recommended when target files are correct but manifest is stale):
+```
+regis release check --rebuild
+```
+Hashes every tracked remote file, writes a new manifest with a fresh release ID, creates a local
+snapshot, and archives the current target state. Future `rollback` will restore this state.
+**Best-effort**: hashes reflect remote files at check time. If local sources diverge from target,
+run `regis run` for a guaranteed accurate manifest.
+
+**2. Remove the manifest** (clean slate, next `regis run` creates a fresh one):
+```
+regis release check --remove
+```
+
+**3. Force-manifest on next run** (all files already correct, just need a manifest):
+```
+regis run --force-manifest
+```
+Writes a manifest even when nothing changed (all StatusEqual). Hashes binary files from
+`r.LocalHash`; single-src config/secret from `Src[0]`; multi-src config is skipped (no single
+representative hash). Use `release check --rebuild` if you need config/secret hashes too.
+
+**4. Fresh deploy** (wipe target and redeploy from scratch — forces all StatusChanged):
+```
+regis run --fresh [scenario]
+```
+Creates a timestamped tar.gz backup next to `target.dir` on the remote, wipes all contents, then
+runs the normal deploy. Because every cue is `StatusChanged`, the manifest is written with full
+hashes. Prompts for confirmation unless `--yes` is set. Backup path:
+`<parent_of_target_dir>/<basename>-bak-<timestamp>.tar.gz`.
+
+#### Release history after remediation
+
+All remediation paths (rebuild, force-manifest, fresh) generate a **new release ID** and append it
+to the archive — they do not rewrite history. After a rebuild following a partial deploy:
+
+```
+v20260612-143022  ← rebuilt checkpoint (rollback target)
+v20260601-120000  ← partial/broken release (stays in history)
+```
+
+`release rollback` with no args picks the entry before the latest, so it naturally lands on the
+rebuild checkpoint, skipping the broken release.
+
+
+---
+
 ## CLI Reference
 
 ### Global flags
@@ -444,12 +521,13 @@ Narrowing: `{ scenario: app, cue: source }` runs only the named cue; `{ scenario
 | command | description |
 |---------|-------------|
 | `regis ai` | output embedded regis schema context for AI-assisted regis.yml authoring |
+| `regis check [id]` | compare a release manifest's hashes against actual remote files |
 | `regis config` | interactive config wizard — add/edit targets, scenarios, services |
 | `regis env` | show env files and variable sources for a target |
 | `regis exec "<command>"` | run a raw SSH command on the target (escape hatch) |
 | `regis fetch` | download remote artifacts to local source paths (or .regis/fetched/ with --archive) |
-| `regis rdiff` | show current sync state — are local cues in sync with remote? |
-| `regis rdiff [id1] [id2]` | compare checksums between two release manifests |
+| `regis rdiff [id1] [id2]` | compare hashs between two release manifests |
+| `regis rdiff [scenario-or-cue,...]` | show current sync state — are local cues in sync with remote? |
 | `regis release` | manage staged releases on the target |
 | `regis run [scenario[,scenario...]]` | run one or more scenarios (omit to run all; also: regis <scenario> directly) |
 | `regis schema` | print the regis.yml schema reference |

@@ -5,8 +5,10 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"git.disroot.org/jmy/regis/internal/config"
@@ -130,6 +132,8 @@ func SelectTargets(targetNames []string, selector string) []string {
 func newRunCommand(gf *GlobalFlags) *cobra.Command {
 	var secretOnly bool
 	var pruneReleases bool
+	var fresh bool
+	var forceManifest bool
 
 	c := &cobra.Command{
 		Use:   "run [scenario[,scenario...]]",
@@ -218,6 +222,74 @@ func newRunCommand(gf *GlobalFlags) *cobra.Command {
 					spinner.Update(fmt.Sprintf("checking %s...", tgtName))
 				}
 
+				// --fresh: backup then wipe target dir before deploying.
+				if fresh {
+					if rawConn == nil {
+						spinner.Stop()
+						return fmt.Errorf("--fresh requires a live SSH connection")
+					}
+					cleanDir := path.Clean(tgt.Dir)
+					ts := time.Now().UTC().Format("20060102-150405")
+					backupPath := path.Join(path.Dir(cleanDir), path.Base(cleanDir)+"-bak-"+ts+".tar.gz")
+
+					spinner.Stop()
+					if !gf.Yes {
+						fmt.Printf("\nfresh deploy on %s: all files in %s will be deleted\n", tgtName, cleanDir)
+						fmt.Printf("backup → %s\n", backupPath)
+						fmt.Printf("proceed? [y/N] ")
+						var ans string
+						fmt.Scan(&ans)
+						if strings.ToLower(strings.TrimSpace(ans)) != "y" {
+							fmt.Println("aborted")
+							rawConn.Close()
+							continue
+						}
+					}
+
+					// Backup.
+					backupCmd := fmt.Sprintf("tar czf %s -C %s %s",
+						backupPath, path.Dir(cleanDir), path.Base(cleanDir))
+					var bErr string
+					var bCode int
+					if tgt.Sudo {
+						_, bErr, bCode, _ = rawConn.RunSudo(backupCmd)
+					} else {
+						_, bErr, bCode, _ = rawConn.Run(backupCmd)
+					}
+					if bCode != 0 {
+						fmt.Fprintf(os.Stderr, "warn: backup failed (exit %d): %s\n", bCode, bErr)
+						if !gf.Yes {
+							fmt.Printf("backup failed — continue with wipe anyway? [y/N] ")
+							var ans string
+							fmt.Scan(&ans)
+							if strings.ToLower(strings.TrimSpace(ans)) != "y" {
+								rawConn.Close()
+								continue
+							}
+						}
+					} else {
+						fmt.Printf("backup  %s\n", backupPath)
+					}
+
+					// Wipe — explicitly exclude backup path as safety net against trailing-slash edge cases.
+					wipeCmd := fmt.Sprintf("find %s -mindepth 1 ! -path %s -delete", cleanDir, backupPath)
+					var wErr string
+					var wCode int
+					if tgt.Sudo {
+						_, wErr, wCode, _ = rawConn.RunSudo(wipeCmd)
+					} else {
+						_, wErr, wCode, _ = rawConn.Run(wipeCmd)
+					}
+					if wCode != 0 {
+						rawConn.Close()
+						return fmt.Errorf("wipe %s failed (exit %d): %s", cleanDir, wCode, wErr)
+					}
+					fmt.Printf("wiped   %s\n", cleanDir)
+
+					spinner = output.NewSpinner(level, fmt.Sprintf("deploying %s...", tgtName))
+					spinner.Start()
+				}
+
 				env, _ := config.BuildEnvForTarget(cfg, &tgt)
 				dispatch := runner.Dispatch{
 					BulkConn: conn,
@@ -263,6 +335,7 @@ func newRunCommand(gf *GlobalFlags) *cobra.Command {
 					SkipConfirm:   gf.Yes,
 					NatureFilter:  ParseNatureFilter(nature),
 					PruneReleases: pruneReleases,
+					ForceManifest: forceManifest,
 					ScopedCues:    scopedCues,
 				},
 					dispatch, onResult)
@@ -288,5 +361,7 @@ func newRunCommand(gf *GlobalFlags) *cobra.Command {
 
 	c.Flags().BoolVarP(&secretOnly, "secrets", "s", false, "shorthand for --nature secret")
 	c.Flags().BoolVar(&pruneReleases, "prune-releases", false, "prune old releases (remote + local) after deploy")
+	c.Flags().BoolVar(&fresh, "fresh", false, "backup then wipe target dir before deploying (prompts for confirmation)")
+	c.Flags().BoolVar(&forceManifest, "force-manifest", false, "write release manifest even when nothing changed (useful after manual file sync)")
 	return c
 }

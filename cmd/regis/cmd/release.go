@@ -386,9 +386,10 @@ With id: checks a specific historical manifest from the release archive.
   ~  hash differs (drift or partial deploy)
   ?  dest exists on target but not tracked in manifest
   -  dest missing on target
+  *  render file (exists, hash not tracked by manifest)
 
 Flags:
-  --rebuild   hash all remote files and write a new accurate manifest (new release ID)
+  --rebuild   hash remote files and write a new accurate manifest (new release ID)
   --remove    delete the live manifest from target (clean slate)`,
 			Args: cobra.MaximumNArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
@@ -432,10 +433,16 @@ Flags:
 						m.DeployedBy,
 					)
 
-					// Collect remote paths to check: from manifest artifacts + config cues.
+					// checkEntry represents one remote file to verify.
+					// baseCueName is the cue name used for CueArtifacts grouping (differs from
+					// cueName only for render folder files, e.g. cueName="html/index.html" baseCueName="html").
+					// trackHash is true for binary/config/secret — the only natures that record hashes
+					// in the manifest (matches normal deploy behaviour).
 					type checkEntry struct {
-						cueName    string
-						remotePath string
+						cueName     string
+						baseCueName string
+						remotePath  string
+						trackHash   bool
 					}
 					var entries []checkEntry
 					seen := map[string]bool{}
@@ -446,26 +453,61 @@ Flags:
 							if cr.ScenarioRef != "" || cr.Dest == "" {
 								continue
 							}
+							if seen[cr.Name] {
+								continue
+							}
+							seen[cr.Name] = true
 							switch cr.Nature {
-							case "binary", "config", "secret", "render":
-								if seen[cr.Name] {
-									continue
-								}
-								seen[cr.Name] = true
+							case "binary", "config", "secret":
 								entries = append(entries, checkEntry{
-									cueName:    cr.Name,
-									remotePath: resolveRemotePathFetch(cr.Dest, tgt.Dir),
+									cueName:     cr.Name,
+									baseCueName: cr.Name,
+									remotePath:  resolveRemotePathFetch(cr.Dest, tgt.Dir),
+									trackHash:   true,
+								})
+							case "render":
+								// Folder render: walk LocalDest to enumerate per-file remote paths.
+								if cr.LocalDest != "" {
+									if info, statErr := os.Stat(cr.LocalDest); statErr == nil && info.IsDir() {
+										remoteBase := resolveRemotePathFetch(strings.TrimRight(cr.Dest, "/"), tgt.Dir)
+										_ = filepath.WalkDir(cr.LocalDest, func(p string, d fs.DirEntry, err error) error {
+											if err != nil || d.IsDir() {
+												return err
+											}
+											rel, _ := filepath.Rel(cr.LocalDest, p)
+											relFwd := filepath.ToSlash(rel)
+											entries = append(entries, checkEntry{
+												cueName:     cr.Name + "/" + relFwd,
+												baseCueName: cr.Name,
+												remotePath:  remoteBase + "/" + relFwd,
+											})
+											return nil
+										})
+										continue
+									}
+								}
+								// Single-file render.
+								entries = append(entries, checkEntry{
+									cueName:     cr.Name,
+									baseCueName: cr.Name,
+									remotePath:  resolveRemotePathFetch(cr.Dest, tgt.Dir),
 								})
 							}
 						}
 					}
 					// Also include manifest artifacts not covered by config (removed cues, etc.)
+					// Preserve trackHash for cues the manifest originally hashed.
 					for cueName, remotePath := range m.Artifacts {
 						if seen[cueName] {
 							continue
 						}
 						seen[cueName] = true
-						entries = append(entries, checkEntry{cueName: cueName, remotePath: remotePath})
+						entries = append(entries, checkEntry{
+							cueName:     cueName,
+							baseCueName: cueName,
+							remotePath:  remotePath,
+							trackHash:   m.Hashes[cueName] != "",
+						})
 					}
 
 					// Hash all remote paths in one bulk call.
@@ -475,11 +517,11 @@ Flags:
 					}
 					remoteHashes := cue.BulkHashRemote(conn, remotePaths)
 
-					fmt.Printf("checking %d cues...\n", len(entries))
+					fmt.Printf("checking %d files...\n", len(entries))
 					fmt.Println(strings.Repeat("─", 60))
 
-					var nMatch, nDrift, nUntracked, nMissing int
-					// For rebuild: collect accurate hashes and artifact paths.
+					var nMatch, nDrift, nUntracked, nRender, nMissing int
+					// For rebuild: collect accurate hashes and properly grouped artifact paths.
 					newHashes := make(map[string]string)
 					newArtifacts := make(map[string]string)
 					newCueArtifacts := make(map[string]map[string]string)
@@ -488,25 +530,33 @@ Flags:
 						manifestHash := m.Hashes[e.cueName]
 						remoteHash, exists := remoteHashes[e.remotePath]
 
-						if e.remotePath != "" {
+						// Always record artifact paths for present files (used by rollback).
+						if exists && e.remotePath != "" {
 							newArtifacts[e.cueName] = e.remotePath
-							newCueArtifacts[e.cueName] = map[string]string{e.cueName: e.remotePath}
+							if newCueArtifacts[e.baseCueName] == nil {
+								newCueArtifacts[e.baseCueName] = make(map[string]string)
+							}
+							newCueArtifacts[e.baseCueName][e.cueName] = e.remotePath
 						}
 
 						switch {
 						case !exists:
-							fmt.Printf("  -  %-24s (missing on target)\n", e.cueName)
+							fmt.Printf("  -  %-28s (missing on target)\n", e.cueName)
 							nMissing++
+						case !e.trackHash:
+							// Render files: manifest does not record hashes, just verify presence.
+							fmt.Printf("  *  %-28s %s\n", e.cueName, shortHash(remoteHash))
+							nRender++
 						case manifestHash == "":
-							fmt.Printf("  ?  %-24s %s (not in manifest)\n", e.cueName, shortHash(remoteHash))
+							fmt.Printf("  ?  %-28s %s (not in manifest)\n", e.cueName, shortHash(remoteHash))
 							newHashes[e.cueName] = remoteHash
 							nUntracked++
 						case remoteHash == manifestHash:
-							fmt.Printf("  =  %-24s %s\n", e.cueName, shortHash(remoteHash))
+							fmt.Printf("  =  %-28s %s\n", e.cueName, shortHash(remoteHash))
 							newHashes[e.cueName] = remoteHash
 							nMatch++
 						default:
-							fmt.Printf("  ~  %-24s remote:%s  manifest:%s\n",
+							fmt.Printf("  ~  %-28s remote:%s  manifest:%s\n",
 								e.cueName, shortHash(remoteHash), shortHash(manifestHash))
 							newHashes[e.cueName] = remoteHash
 							nDrift++
@@ -523,6 +573,9 @@ Flags:
 					}
 					if nUntracked > 0 {
 						parts = append(parts, fmt.Sprintf("%d untracked", nUntracked))
+					}
+					if nRender > 0 {
+						parts = append(parts, fmt.Sprintf("%d render", nRender))
 					}
 					if nMissing > 0 {
 						parts = append(parts, fmt.Sprintf("%d missing", nMissing))
@@ -550,7 +603,6 @@ Flags:
 						if user == "" {
 							user = os.Getenv("USERNAME")
 						}
-						scenarios := cfg.ScenarioNames
 
 						if len(newHashes) == 0 {
 							newHashes = nil
@@ -566,7 +618,7 @@ Flags:
 							Release:      releaseID,
 							DeployedAt:   time.Now().UTC(),
 							DeployedBy:   user + "@" + hostname,
-							Scenarios:    scenarios,
+							Scenarios:    cfg.ScenarioNames,
 							Hashes:       newHashes,
 							Artifacts:    newArtifacts,
 							CueArtifacts: newCueArtifacts,
@@ -593,6 +645,9 @@ Flags:
 						} else {
 							fmt.Printf("archive   %s/%s\n", relDir, releaseID)
 						}
+
+						fmt.Println("\nnote: rebuild is best-effort — hashes reflect remote files at check time.")
+						fmt.Println("      if local sources diverge from target, run 'regis run' for an accurate manifest.")
 					}
 
 					return nil

@@ -36,8 +36,10 @@ type manifestUploader interface {
 
 // BuildManifest constructs a ReleaseManifest from deploy results and steps.
 // Hashes are populated for StatusChanged binary/config/secret cues that have LocalHash.
+// When includeEqual is true (--force-manifest), StatusEqual cues are also hashed:
+// binary uses r.LocalHash; single-src config/secret compute the hash from Src[0].
 // Artifacts maps every binary/config/secret/render cue to its remote path (needed for rollback).
-func BuildManifest(releaseID string, scenarios []string, results []cue.Result, steps []Step, targetDir string) ReleaseManifest {
+func BuildManifest(releaseID string, scenarios []string, results []cue.Result, steps []Step, targetDir string, includeEqual bool) ReleaseManifest {
 	hostname, _ := os.Hostname()
 	user := os.Getenv("USER")
 	if user == "" {
@@ -57,6 +59,37 @@ func BuildManifest(releaseID string, scenarios []string, results []cue.Result, s
 			}
 		}
 	}
+	// When --force-manifest is set, also hash StatusEqual cues so a no-change run
+	// produces a usable manifest (covers the manual-sync + regis-run scenario).
+	if includeEqual {
+		stepByCue := make(map[string]Step, len(steps))
+		for _, s := range steps {
+			stepByCue[s.CueRef.Name] = s
+		}
+		for _, r := range results {
+			if checksums[r.CueName] != "" || r.Status != cue.StatusEqual {
+				continue
+			}
+			switch r.Nature {
+			case "binary":
+				if r.LocalHash != "" {
+					checksums[r.CueName] = r.LocalHash
+				} else if s, ok := stepByCue[r.CueName]; ok && len(s.CueRef.Src) > 0 {
+					if h, err := cue.LocalHash(s.CueRef.Src[0]); err == nil {
+						checksums[r.CueName] = h
+					}
+				}
+			case "config", "secret":
+				// Only single-src: multi-src has no single representative hash.
+				if s, ok := stepByCue[r.CueName]; ok && len(s.CueRef.Src) == 1 {
+					if h, err := cue.LocalHash(s.CueRef.Src[0]); err == nil {
+						checksums[r.CueName] = h
+					}
+				}
+			}
+		}
+	}
+
 	if len(checksums) == 0 {
 		checksums = nil
 	}

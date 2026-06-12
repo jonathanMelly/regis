@@ -22,6 +22,7 @@ type Options struct {
 	SkipConfirm      bool
 	NatureFilter     []string            // empty = all natures
 	PruneReleases    bool                // prune old releases (remote + local) after a successful deploy
+	ForceManifest    bool                // write manifest even when no cue changed (covers manual-sync scenarios)
 	DeduplicateSteps bool                // drop duplicate (ScenarioName, CueName) steps — rdiff only
 	ScenarioFilter   []string            // if non-empty, keep only steps whose ScenarioName is in this set — rdiff only
 	CueFilter        []string            // if non-empty, keep only steps whose Name is in this set — rdiff only
@@ -304,44 +305,48 @@ func Run(ctx context.Context, cfg *config.Config, scenarioNames []string, target
 		_ = runPrePost(ctx, pp, conn)
 	}
 
-	// Write release manifest + local snapshot + remote archive if any release-affecting cue changed.
-	// Release tracking is enabled by default (assigns a release ID per deploy for rollback).
-	// Disable with release.enabled: false for live deploys with no history.
+	// Write release manifest + local snapshot + remote archive if any release-affecting cue changed,
+	// or when --force-manifest is set (covers manual-sync + regis-run where nothing changed).
+	// Release tracking is enabled by default. Disable with release.enabled: false.
 	releaseEnabled := cfg.Release.Enabled == nil || *cfg.Release.Enabled
 	if releaseEnabled {
+		shouldWriteManifest := opts.ForceManifest
 		for _, r := range rr.Results {
 			if r.IsReleaseAffecting() {
-				manifest := BuildManifest(releaseID, scenarioNames, rr.Results, remotePhase.Steps, target.Dir)
-				// Non-fatal: manifest write failure does not fail the deploy.
-				_ = WriteManifest(conn, target.Dir, manifest, target.Sudo)
-				localDir := cfg.Release.LocalDir
-				if localDir == "" {
-					localDir = ".regis-releases"
-				}
-				SnapshotRelease(localDir, releaseID, manifest, remotePhase.Steps, rr.Results)
-				// Archive deployed files on remote via cp (no re-upload).
-				// Default remote release dir to <target.dir>/.regis-releases when not configured.
-				releaseDir := cfg.Release.Dir
-				if releaseDir == "" {
-					releaseDir = path.Join(target.Dir, ".regis-releases")
-				}
-				archiveCmd := fmt.Sprintf("mkdir -p %s && cp -rp %s/. %s/%s/",
-					releaseDir, target.Dir, releaseDir, releaseID)
-				_, _, _, _ = conn.Run(archiveCmd)
-				// Prune old releases if requested.
-				if opts.PruneReleases {
-					keep := cfg.Release.Keep
-					if keep <= 0 {
-						keep = 5
-					}
-					pruneCmd := fmt.Sprintf(
-						"ls -dt %s/v* 2>/dev/null | tail -n +%d | xargs -r rm -rf 2>/dev/null; true",
-						releaseDir, keep+1,
-					)
-					_, _, _, _ = conn.Run(pruneCmd)
-					PruneLocalSnapshots(localDir, keep)
-				}
+				shouldWriteManifest = true
 				break
+			}
+		}
+		if shouldWriteManifest {
+			manifest := BuildManifest(releaseID, scenarioNames, rr.Results, remotePhase.Steps, target.Dir, opts.ForceManifest)
+			// Non-fatal: manifest write failure does not fail the deploy.
+			_ = WriteManifest(conn, target.Dir, manifest, target.Sudo)
+			localDir := cfg.Release.LocalDir
+			if localDir == "" {
+				localDir = ".regis-releases"
+			}
+			SnapshotRelease(localDir, releaseID, manifest, remotePhase.Steps, rr.Results)
+			// Archive deployed files on remote via cp (no re-upload).
+			// Default remote release dir to <target.dir>/.regis-releases when not configured.
+			releaseDir := cfg.Release.Dir
+			if releaseDir == "" {
+				releaseDir = path.Join(target.Dir, ".regis-releases")
+			}
+			archiveCmd := fmt.Sprintf("mkdir -p %s && cp -rp %s/. %s/%s/",
+				releaseDir, target.Dir, releaseDir, releaseID)
+			_, _, _, _ = conn.Run(archiveCmd)
+			// Prune old releases if requested.
+			if opts.PruneReleases {
+				keep := cfg.Release.Keep
+				if keep <= 0 {
+					keep = 5
+				}
+				pruneCmd := fmt.Sprintf(
+					"ls -dt %s/v* 2>/dev/null | tail -n +%d | xargs -r rm -rf 2>/dev/null; true",
+					releaseDir, keep+1,
+				)
+				_, _, _, _ = conn.Run(pruneCmd)
+				PruneLocalSnapshots(localDir, keep)
 			}
 		}
 	}
