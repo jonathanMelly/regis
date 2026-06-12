@@ -29,9 +29,16 @@ func TestBuildManifest_checksums_binaryConfigSecret(t *testing.T) {
 		{CueName: "bin", Nature: "binary", Status: cue.StatusChanged, LocalHash: "aabbcc"},
 		{CueName: "cfg", Nature: "config", Status: cue.StatusChanged, LocalHash: "ddeeff"},
 		{CueName: "sec", Nature: "secret", Status: cue.StatusChanged, LocalHash: "112233"},
+		// Single-file render: LocalHash set, FileTotal==0 → tracked in Hashes.
+		{CueName: "rnd", Nature: "render", Status: cue.StatusChanged, LocalHash: "998877", FileTotal: 0},
+		// Folder render: FileTotal>0 → tracked in FileHashes, not Hashes.
+		{CueName: "rnd-folder", Nature: "render", Status: cue.StatusChanged, LocalHash: "composite", FileTotal: 3},
+		// Pack cue: composite hash → tracked in Hashes.
+		{CueName: "web", Nature: "pack", Status: cue.StatusChanged, LocalHash: "packsha"},
+		// Service and action: never tracked.
 		{CueName: "svc", Nature: "service", Status: cue.StatusChanged, LocalHash: "ignored"},
 		{CueName: "act", Nature: "action", Status: cue.StatusChanged, LocalHash: "ignored"},
-		{CueName: "rnd", Nature: "render", Status: cue.StatusChanged, LocalHash: "ignored"},
+		// Equal cue: not tracked (includeEqual=false).
 		{CueName: "eq", Nature: "binary", Status: cue.StatusEqual, LocalHash: "skipped"},
 	}
 	m := runner.BuildManifest("v20260101-120000", []string{"app"}, results, nil, "", false)
@@ -48,13 +55,23 @@ func TestBuildManifest_checksums_binaryConfigSecret(t *testing.T) {
 	if m.Hashes["sec"] != "112233" {
 		t.Errorf("secret checksum missing or wrong: %v", m.Hashes)
 	}
-	// service, action, render — not tracked in checksums
-	for _, key := range []string{"svc", "act", "rnd"} {
+	if m.Hashes["rnd"] != "998877" {
+		t.Errorf("single-file render hash must be tracked: got %q, want 998877", m.Hashes["rnd"])
+	}
+	if m.Hashes["web"] != "packsha" {
+		t.Errorf("pack composite hash must be tracked: got %q, want packsha", m.Hashes["web"])
+	}
+	// Folder render goes to FileHashes, not Hashes.
+	if _, ok := m.Hashes["rnd-folder"]; ok {
+		t.Error("folder render must not appear in Hashes (use FileHashes)")
+	}
+	// service, action — never tracked.
+	for _, key := range []string{"svc", "act"} {
 		if _, ok := m.Hashes[key]; ok {
 			t.Errorf("%s must not appear in checksums", key)
 		}
 	}
-	// equal cue — not tracked
+	// equal cue — not tracked when includeEqual=false.
 	if _, ok := m.Hashes["eq"]; ok {
 		t.Error("equal cue must not appear in checksums")
 	}

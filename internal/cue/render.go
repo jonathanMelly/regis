@@ -139,6 +139,7 @@ func (e *RenderExecutor) executeFile(ctx context.Context, cr config.CueRef, targ
 	// Compare by remote hash — avoids downloading the rendered file.
 	// Rendered output is generated; a text diff of remote vs. local is not meaningful.
 	lmd5 := localHashBytes(localData)
+	r.LocalHash = lmd5
 	remoteMissing := RemoteFilesKnown(ctx) && !RemoteFileExists(ctx, remotePath)
 	var remoteHash string
 	if !remoteMissing {
@@ -234,6 +235,7 @@ func (e *RenderExecutor) executeFolder(ctx context.Context, cr config.CueRef, ta
 	var totalSize int64
 	var diffBuf strings.Builder
 	progressFn := FileProgressFrom(ctx)
+	localHashes := make(map[string]string, len(localFiles)) // relPath → lmd5 for composite hash
 
 	localRelPaths := make(map[string]bool, len(localFiles))
 	for i, lf := range localFiles {
@@ -249,6 +251,7 @@ func (e *RenderExecutor) executeFolder(ctx context.Context, cr config.CueRef, ta
 		}
 
 		lmd5 := localHashBytes(localData)
+		localHashes[lf.relPath] = lmd5
 		remoteHash := remoteHashes[remoteFilePath]
 		remoteMissing := RemoteFilesKnown(ctx) && !RemoteFileExists(ctx, remoteFilePath)
 
@@ -308,6 +311,18 @@ func (e *RenderExecutor) executeFolder(ctx context.Context, cr config.CueRef, ta
 				prunedNames = append(prunedNames, rel)
 			}
 		}
+	}
+
+	// Compute composite hash and per-file artifact maps (both StatusEqual and StatusChanged).
+	r.LocalHash = multiFileHash(localHashes)
+	r.LocalFileHashes = make(map[string]string, len(localFiles))
+	r.ArtifactPaths = make(map[string]string, len(localFiles))
+	r.LocalArtifacts = make(map[string]string, len(localFiles))
+	for _, lf := range localFiles {
+		key := cr.Name + "/" + lf.relPath
+		r.LocalFileHashes[key] = localHashes[lf.relPath]
+		r.ArtifactPaths[key] = remoteDest + lf.relPath
+		r.LocalArtifacts[key] = lf.absPath
 	}
 
 	// Aggregate result.

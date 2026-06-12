@@ -65,6 +65,7 @@ type Result struct {
 	ManifestHash     string        // manifest's expected hash for this cue
 	ArtifactPaths    map[string]string // snapshotKey → remote path (pack: cueName/relpath; populated by pack executor)
 	LocalArtifacts   map[string]string // snapshotKey → local file path (pack: cueName/relpath; populated by pack executor)
+	LocalFileHashes  map[string]string // snapshotKey → local MD5 (pack: cueName/relpath; populated by pack executor)
 	Warnings         []string          // shown with ⚠ in output for all statuses; used e.g. for git: true uncommitted-state alerts
 	FileTotal        int               // total files considered by multi-file cues (pack, render, multi-src config)
 	FileChanged      int               // how many of those files differ from remote

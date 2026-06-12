@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -254,4 +255,157 @@ func (u *uploadTrackConn) Upload(local, remote string, _ fs.FileMode, _ bool) er
 	u.uploadLocalPath = local
 	u.uploadRemotePath = remote
 	return nil
+}
+
+// ── buildCheckEntries ─────────────────────────────────────────────────────────
+
+func makeCfg(cues ...config.CueRef) *config.Config {
+	sc := config.Scenario{Cues: cues}
+	return &config.Config{
+		ScenarioNames: []string{"app"},
+		Scenarios:     map[string]config.Scenario{"app": sc},
+	}
+}
+
+func TestBuildCheckEntries_binary(t *testing.T) {
+	cfg := makeCfg(config.CueRef{Name: "bin", Nature: "binary", Dest: "/opt/app/bin"})
+	m := runner.ReleaseManifest{Hashes: map[string]string{"bin": "aabbcc"}}
+	entries := buildCheckEntries(cfg, m, "/opt/app")
+	if len(entries) != 1 {
+		t.Fatalf("want 1 entry, got %d", len(entries))
+	}
+	e := entries[0]
+	if !e.trackHash {
+		t.Error("binary entry must have trackHash=true")
+	}
+	if e.expectedHash != "aabbcc" {
+		t.Errorf("expectedHash: want aabbcc, got %q", e.expectedHash)
+	}
+}
+
+func TestBuildCheckEntries_pack_withArtifacts(t *testing.T) {
+	cfg := makeCfg(config.CueRef{Name: "web", Nature: "pack", Dest: "/www"})
+	m := runner.ReleaseManifest{
+		CueArtifacts: map[string]map[string]string{
+			"web": {
+				"web/index.html": "/www/index.html",
+				"web/app.js":     "/www/app.js",
+			},
+		},
+		FileHashes: map[string]map[string]string{
+			"web": {
+				"web/index.html": "hash1",
+				"web/app.js":     "hash2",
+			},
+		},
+	}
+	entries := buildCheckEntries(cfg, m, "/opt")
+	if len(entries) != 2 {
+		t.Fatalf("want 2 entries, got %d", len(entries))
+	}
+	for _, e := range entries {
+		if e.baseCueName != "web" {
+			t.Errorf("baseCueName: want web, got %q", e.baseCueName)
+		}
+		if !e.trackHash {
+			t.Errorf("entry %q: want trackHash=true (FileHashes present)", e.cueName)
+		}
+		if e.expectedHash == "" {
+			t.Errorf("entry %q: expectedHash must not be empty when FileHashes present", e.cueName)
+		}
+	}
+}
+
+func TestBuildCheckEntries_pack_noArtifacts_sentinel(t *testing.T) {
+	cfg := makeCfg(config.CueRef{Name: "web", Nature: "pack", Dest: "/www"})
+	m := runner.ReleaseManifest{} // no artifacts recorded
+	entries := buildCheckEntries(cfg, m, "/opt")
+	if len(entries) != 1 {
+		t.Fatalf("want 1 sentinel entry, got %d", len(entries))
+	}
+	if entries[0].remotePath != "" {
+		t.Error("sentinel entry must have remotePath=\"\"")
+	}
+}
+
+func TestBuildCheckEntries_pack_olderManifest_noFileHashes(t *testing.T) {
+	// Older manifest: has CueArtifacts but no FileHashes — pack files show as presence-only.
+	cfg := makeCfg(config.CueRef{Name: "web", Nature: "pack", Dest: "/www"})
+	m := runner.ReleaseManifest{
+		CueArtifacts: map[string]map[string]string{
+			"web": {"web/index.html": "/www/index.html"},
+		},
+		// FileHashes intentionally absent
+	}
+	entries := buildCheckEntries(cfg, m, "/opt")
+	if len(entries) != 1 {
+		t.Fatalf("want 1 entry, got %d", len(entries))
+	}
+	if entries[0].trackHash {
+		t.Error("older manifest without FileHashes: trackHash must be false")
+	}
+}
+
+func TestBuildCheckEntries_render_singleFile(t *testing.T) {
+	cfg := makeCfg(config.CueRef{Name: "tmpl", Nature: "render", Dest: "/etc/app/conf"})
+	m := runner.ReleaseManifest{}
+	entries := buildCheckEntries(cfg, m, "/opt")
+	if len(entries) != 1 {
+		t.Fatalf("want 1 entry, got %d", len(entries))
+	}
+	if entries[0].trackHash {
+		t.Error("render file must have trackHash=false")
+	}
+}
+
+func TestBuildCheckEntries_manifestFallback(t *testing.T) {
+	// Config has no cues, but manifest has a removed cue — should appear via fallback.
+	cfg := makeCfg() // empty
+	m := runner.ReleaseManifest{
+		Artifacts: map[string]string{"old-bin": "/opt/old-bin"},
+		Hashes:    map[string]string{"old-bin": "deadbeef"},
+	}
+	entries := buildCheckEntries(cfg, m, "/opt")
+	if len(entries) != 1 {
+		t.Fatalf("want 1 fallback entry, got %d", len(entries))
+	}
+	e := entries[0]
+	if !e.trackHash || e.expectedHash != "deadbeef" {
+		t.Errorf("fallback entry: want trackHash=true expectedHash=deadbeef, got trackHash=%v expectedHash=%q",
+			e.trackHash, e.expectedHash)
+	}
+}
+
+func TestBuildCheckEntries_noDuplication(t *testing.T) {
+	// Same cue in both config and manifest.Artifacts must not produce duplicate entries.
+	cfg := makeCfg(config.CueRef{Name: "bin", Nature: "binary", Dest: "/opt/bin"})
+	m := runner.ReleaseManifest{
+		Artifacts: map[string]string{"bin": "/opt/bin"},
+		Hashes:    map[string]string{"bin": "aabbcc"},
+	}
+	entries := buildCheckEntries(cfg, m, "/opt")
+	if len(entries) != 1 {
+		t.Errorf("want exactly 1 entry (no duplication), got %d", len(entries))
+	}
+}
+
+// ── latestLocalSnapshot ───────────────────────────────────────────────────────
+
+func TestLatestLocalSnapshot_returnsNewest(t *testing.T) {
+	dir := t.TempDir()
+	for _, id := range []string{"v20260610-120000", "v20260612-090000", "v20260611-150000"} {
+		snap := filepath.Join(dir, id)
+		os.MkdirAll(snap, 0755)
+		os.WriteFile(filepath.Join(snap, ".regis-release"), []byte("release: "+id), 0644)
+	}
+	got := latestLocalSnapshot(dir)
+	if !strings.Contains(got, "v20260612-090000") {
+		t.Errorf("want latest snapshot (v20260612-090000), got %q", got)
+	}
+}
+
+func TestLatestLocalSnapshot_empty(t *testing.T) {
+	if got := latestLocalSnapshot(t.TempDir()); got != "" {
+		t.Errorf("want empty string for empty dir, got %q", got)
+	}
 }

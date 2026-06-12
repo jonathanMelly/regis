@@ -28,6 +28,7 @@ package cue
 
 import (
 	"context"
+	"crypto/md5"
 	"fmt"
 	"os"
 	"os/exec"
@@ -207,6 +208,7 @@ func (e *PackExecutor) Execute(ctx context.Context, conn SSHConn, cr config.CueR
 	var totalSize int64
 	var diffBuf strings.Builder
 	localRelPaths := make(map[string]bool, len(srcs))
+	localHashes := make(map[string]string, len(srcs)) // rel → local MD5 (for composite hash)
 	progressFn := FileProgressFrom(ctx)
 	var scanned int
 
@@ -231,6 +233,7 @@ func (e *PackExecutor) Execute(ctx context.Context, conn SSHConn, cr config.CueR
 		ps := packStats[remotePath]
 		remoteMissing := ps.missing
 		lmd5 := localHashBytes(localData)
+		localHashes[rel] = lmd5
 
 		remoteLabel := func(h string) string {
 			if remoteMissing {
@@ -343,6 +346,15 @@ func (e *PackExecutor) Execute(ctx context.Context, conn SSHConn, cr config.CueR
 		pr = pruneResult{report: report, affected: affected}
 	}
 
+	// Compute a stable hash representing the local pack content.
+	// For git: true cues the full commit SHA is authoritative; for file packs
+	// we hash the sorted "relpath\tmd5\n" manifest so any file change shifts it.
+	if cr.Git {
+		r.LocalHash = gitFullHash()
+	} else {
+		r.LocalHash = multiFileHash(localHashes)
+	}
+
 	// AffectsRelease only when something actually changed or was pruned on the remote.
 	r.AffectsRelease = len(changedNames) > 0 || pr.affected
 
@@ -369,6 +381,7 @@ func (e *PackExecutor) Execute(ctx context.Context, conn SSHConn, cr config.CueR
 		// this cue's files into the release manifest without a re-deploy.
 		r.ArtifactPaths = make(map[string]string, len(srcs))
 		r.LocalArtifacts = make(map[string]string, len(srcs))
+		r.LocalFileHashes = make(map[string]string, len(srcs))
 		for _, sf := range srcs {
 			rel := remoteRelPath(sf.path, sf.pattern)
 			if strings.HasPrefix(rel, ".regis-pack-") {
@@ -377,6 +390,9 @@ func (e *PackExecutor) Execute(ctx context.Context, conn SSHConn, cr config.CueR
 			key := cr.Name + "/" + rel
 			r.LocalArtifacts[key] = sf.path
 			r.ArtifactPaths[key] = remoteDest + sep + strings.ReplaceAll(rel, "/", sep)
+			if h, ok := localHashes[rel]; ok {
+				r.LocalFileHashes[key] = h
+			}
 		}
 		return r, nil
 	}
@@ -410,6 +426,7 @@ func (e *PackExecutor) Execute(ctx context.Context, conn SSHConn, cr config.CueR
 	// Covers all pack files (not just changed ones) so the snapshot is complete.
 	r.LocalArtifacts = make(map[string]string, len(srcs))
 	r.ArtifactPaths = make(map[string]string, len(srcs))
+	r.LocalFileHashes = make(map[string]string, len(srcs))
 	for _, sf := range srcs {
 		rel := remoteRelPath(sf.path, sf.pattern)
 		if strings.HasPrefix(rel, ".regis-pack-") {
@@ -418,6 +435,9 @@ func (e *PackExecutor) Execute(ctx context.Context, conn SSHConn, cr config.CueR
 		key := cr.Name + "/" + rel
 		r.LocalArtifacts[key] = sf.path
 		r.ArtifactPaths[key] = remoteDest + sep + strings.ReplaceAll(rel, "/", sep)
+		if h, ok := localHashes[rel]; ok {
+			r.LocalFileHashes[key] = h
+		}
 	}
 
 	r.Elapsed = time.Since(start)
@@ -714,9 +734,37 @@ func destRelativeToTarget(dest string) (string, bool) {
 	return dest, true
 }
 
-// gitShortHash returns the short commit hash of HEAD, or "" on error.
+// multiFileHash computes a single MD5 over sorted "relpath\tmd5\n" lines for a
+// set of local files. Used by pack and render folder cues as their LocalHash.
+// The result changes whenever any file is added, removed, or modified.
+func multiFileHash(localHashes map[string]string) string {
+	if len(localHashes) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(localHashes))
+	for k := range localHashes {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	h := md5.New()
+	for _, k := range keys {
+		fmt.Fprintf(h, "%s\t%s\n", k, localHashes[k])
+	}
+	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+// gitShortHash returns the short commit hash of HEAD (for display), or "" on error.
 func gitShortHash() string {
 	out, err := exec.Command("git", "rev-parse", "--short", "HEAD").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// gitFullHash returns the full SHA-1 of HEAD (for manifest recording), or "" on error.
+func gitFullHash() string {
+	out, err := exec.Command("git", "rev-parse", "HEAD").Output()
 	if err != nil {
 		return ""
 	}

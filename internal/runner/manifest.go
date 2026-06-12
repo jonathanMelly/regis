@@ -24,9 +24,10 @@ type ReleaseManifest struct {
 	DeployedAt   time.Time                    `yaml:"deployed_at"`
 	DeployedBy   string                       `yaml:"deployed_by"`
 	Scenarios    []string                     `yaml:"scenarios"`
-	Hashes    map[string]string            `yaml:"hashes,omitempty"`
+	Hashes       map[string]string            `yaml:"hashes,omitempty"`
 	Artifacts    map[string]string            `yaml:"artifacts,omitempty"`    // cue name → remote path (for rollback)
 	CueArtifacts map[string]map[string]string `yaml:"cue_artifacts,omitempty"` // cue name → {snapshotKey → remote path}
+	FileHashes   map[string]map[string]string `yaml:"file_hashes,omitempty"`  // cue name → {snapshotKey → local MD5} for pack cues
 }
 
 // manifestUploader is the subset of cue.SSHConn needed to write the manifest.
@@ -54,6 +55,16 @@ func BuildManifest(releaseID string, scenarios []string, results []cue.Result, s
 		}
 		switch r.Nature {
 		case "binary", "config", "secret":
+			if r.LocalHash != "" {
+				checksums[r.CueName] = r.LocalHash
+			}
+		case "render":
+			// Single-file render only; folder render uses FileHashes (per-file).
+			if r.LocalHash != "" && r.FileTotal == 0 {
+				checksums[r.CueName] = r.LocalHash
+			}
+		case "pack":
+			// Composite hash (all files) or git SHA for git: true cues.
 			if r.LocalHash != "" {
 				checksums[r.CueName] = r.LocalHash
 			}
@@ -107,8 +118,9 @@ func BuildManifest(releaseID string, scenarios []string, results []cue.Result, s
 
 	artifacts := make(map[string]string)
 	cueArtifacts := make(map[string]map[string]string)
+	fileHashes := make(map[string]map[string]string)
 
-	// Pack cues: use ArtifactPaths populated by the executor (cueName/relpath → remote).
+	// Pack cues: use ArtifactPaths and LocalFileHashes populated by the executor.
 	for _, r := range results {
 		if failedCues[r.CueName] {
 			continue
@@ -120,6 +132,9 @@ func BuildManifest(releaseID string, scenarios []string, results []cue.Result, s
 				artifacts[r.CueName] = remotePath
 				break
 			}
+		}
+		if len(r.LocalFileHashes) > 0 {
+			fileHashes[r.CueName] = r.LocalFileHashes
 		}
 	}
 
@@ -168,15 +183,19 @@ func BuildManifest(releaseID string, scenarios []string, results []cue.Result, s
 	if len(cueArtifacts) == 0 {
 		cueArtifacts = nil
 	}
+	if len(fileHashes) == 0 {
+		fileHashes = nil
+	}
 
 	return ReleaseManifest{
 		Release:      releaseID,
 		DeployedAt:   time.Now().UTC(),
 		DeployedBy:   deployedBy,
 		Scenarios:    scenarios,
-		Hashes:    checksums,
+		Hashes:       checksums,
 		Artifacts:    artifacts,
 		CueArtifacts: cueArtifacts,
+		FileHashes:   fileHashes,
 	}
 }
 
