@@ -264,10 +264,10 @@ func ArchiveRelease(conn archiveRunner, targetDir, releaseDir, releaseID string)
 // Render folder mode: files are stored with composite key "cueName/relpath".
 // Pack cues: all local files are stored using LocalArtifacts from executor results (cueName/relpath keys).
 // Auto-prune is NOT performed — call PruneLocalSnapshots explicitly when desired.
-// Non-fatal: errors are silently ignored.
-func SnapshotRelease(releaseDir, releaseID string, manifest ReleaseManifest, steps []Step, results []cue.Result) {
+// Returns warning strings for any file that could not be written (non-fatal).
+func SnapshotRelease(releaseDir, releaseID string, manifest ReleaseManifest, steps []Step, results []cue.Result) []string {
 	if releaseDir == "" || releaseID == "" {
-		return
+		return nil
 	}
 
 	// Build a cueName → Result index for pack artifact lookups.
@@ -322,19 +322,22 @@ func SnapshotRelease(releaseDir, releaseID string, manifest ReleaseManifest, ste
 		}
 		files[cr.Name] = data
 	}
-	manifestData, _ := yaml.Marshal(manifest)
-	writeSnapshotDir(releaseDir, releaseID, manifestData, files)
+	manifestData, marshalErr := yaml.Marshal(manifest)
+	if marshalErr != nil {
+		return []string{fmt.Sprintf("snapshot: marshal manifest: %v", marshalErr)}
+	}
+	return writeSnapshotDir(releaseDir, releaseID, manifestData, files)
 }
 
 // WriteSnapshot writes a local release snapshot from pre-loaded byte slices.
 // Used by 'fetch' to bootstrap release history from the current remote state.
 // Auto-prune is NOT performed — call PruneLocalSnapshots explicitly when desired.
-// Non-fatal: errors are silently ignored.
-func WriteSnapshot(releaseDir, releaseID string, manifestRaw []byte, files map[string][]byte) {
+// Returns warning strings for any file that could not be written.
+func WriteSnapshot(releaseDir, releaseID string, manifestRaw []byte, files map[string][]byte) []string {
 	if releaseDir == "" || releaseID == "" {
-		return
+		return nil
 	}
-	writeSnapshotDir(releaseDir, releaseID, manifestRaw, files)
+	return writeSnapshotDir(releaseDir, releaseID, manifestRaw, files)
 }
 
 // PruneLocalSnapshots deletes the oldest snapshot dirs in releaseDir, keeping the most recent keep.
@@ -346,21 +349,28 @@ func PruneLocalSnapshots(releaseDir string, keep int) {
 	pruneSnapshots(releaseDir, keep)
 }
 
-func writeSnapshotDir(releaseDir, releaseID string, manifestData []byte, files map[string][]byte) {
+func writeSnapshotDir(releaseDir, releaseID string, manifestData []byte, files map[string][]byte) []string {
+	var warns []string
 	dir := filepath.Join(releaseDir, releaseID)
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		return
+		return []string{fmt.Sprintf("snapshot: mkdir %s: %v", dir, err)}
 	}
 	if len(manifestData) > 0 {
-		_ = os.WriteFile(filepath.Join(dir, ".regis-release"), manifestData, 0644)
+		if err := os.WriteFile(filepath.Join(dir, ".regis-release"), manifestData, 0644); err != nil {
+			warns = append(warns, fmt.Sprintf("snapshot: write manifest: %v", err))
+		}
 	}
 	for name, data := range files {
 		dest := filepath.Join(dir, filepath.FromSlash(name))
 		if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
+			warns = append(warns, fmt.Sprintf("snapshot: mkdir for %s: %v", name, err))
 			continue
 		}
-		_ = os.WriteFile(dest, data, 0644)
+		if err := os.WriteFile(dest, data, 0644); err != nil {
+			warns = append(warns, fmt.Sprintf("snapshot: write %s: %v", name, err))
+		}
 	}
+	return warns
 }
 
 // cueSnapshotPath returns the local source file to include in a release snapshot.

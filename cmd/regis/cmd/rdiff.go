@@ -118,6 +118,9 @@ Optional filter: comma-separated scenario or cue names to check a subset.
 							if res == nil {
 								return nil, 0, runErr
 							}
+							for _, w := range res.SystemWarnings {
+								fmt.Fprintf(os.Stderr, "\nwarn: %s\n", w)
+							}
 							return res.Results, res.Elapsed, runErr
 						},
 					)

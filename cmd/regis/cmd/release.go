@@ -632,9 +632,16 @@ Flags:
 						fmt.Printf("\nmanifest  %s\n", releaseID)
 
 						localDir := effectiveLocalDir(cfg)
-						raw, _ := yaml.Marshal(rebuilt)
-						runner.WriteSnapshot(localDir, releaseID, raw, nil)
-						fmt.Printf("snapshot  %s/%s\n", localDir, releaseID)
+						raw, marshalErr := yaml.Marshal(rebuilt)
+						if marshalErr != nil {
+							fmt.Fprintf(os.Stderr, "warn: marshal snapshot: %v\n", marshalErr)
+						} else if snapWarns := runner.WriteSnapshot(localDir, releaseID, raw, nil); len(snapWarns) > 0 {
+							for _, w := range snapWarns {
+								fmt.Fprintf(os.Stderr, "warn: %s\n", w)
+							}
+						} else {
+							fmt.Printf("snapshot  %s/%s\n", localDir, releaseID)
+						}
 
 						relDir := resolveReleaseDir(cfg, tgt)
 						if archErr := runner.ArchiveRelease(conn, tgt.Dir, relDir, releaseID); archErr != nil {

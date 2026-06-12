@@ -332,7 +332,10 @@ func (e *PackExecutor) Execute(ctx context.Context, conn SSHConn, cr config.CueR
 	// Always write the managed-file manifest after a successful non-dry-run deploy so
 	// tier-1 prune is available on the next run regardless of whether prune: true today.
 	if !dryRun {
-		e.writePackManifest(remoteDest, sep, cr.Name, localRelPaths, useSudo)
+		if err := e.writePackManifest(remoteDest, sep, cr.Name, localRelPaths, useSudo); err != nil {
+			r.Warnings = append(r.Warnings,
+				fmt.Sprintf("managed manifest write failed — next deploy will fall back to heuristic pruning: %v", err))
+		}
 	}
 
 	// Three-tier prune.
@@ -445,7 +448,9 @@ func (e *PackExecutor) Execute(ctx context.Context, conn SSHConn, cr config.CueR
 }
 
 // writePackManifest writes .regis-pack-<cueName> in remoteDest listing all managed rel paths.
-func (e *PackExecutor) writePackManifest(remoteDest, sep, cueName string, localRelPaths map[string]bool, useSudo bool) {
+// Returns an error if the upload fails — caller should surface this as a warning since
+// pruning will silently downgrade to a heuristic on the next deploy.
+func (e *PackExecutor) writePackManifest(remoteDest, sep, cueName string, localRelPaths map[string]bool, useSudo bool) error {
 	lines := make([]string, 0, len(localRelPaths))
 	for rel := range localRelPaths {
 		lines = append(lines, rel)
@@ -453,7 +458,7 @@ func (e *PackExecutor) writePackManifest(remoteDest, sep, cueName string, localR
 	sort.Strings(lines)
 	content := strings.Join(lines, "\n") + "\n"
 	manifestPath := remoteDest + sep + ".regis-pack-" + cueName
-	_ = e.conn.UploadBytes([]byte(content), manifestPath, 0644, useSudo)
+	return e.conn.UploadBytes([]byte(content), manifestPath, 0644, useSudo)
 }
 
 // runPrune implements the three-tier prune strategy.

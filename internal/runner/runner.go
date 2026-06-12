@@ -319,21 +319,25 @@ func Run(ctx context.Context, cfg *config.Config, scenarioNames []string, target
 		}
 		if shouldWriteManifest {
 			manifest := BuildManifest(releaseID, scenarioNames, rr.Results, remotePhase.Steps, target.Dir, opts.ForceManifest)
-			// Non-fatal: manifest write failure does not fail the deploy.
-			_ = WriteManifest(conn, target.Dir, manifest, target.Sudo)
+			if err := WriteManifest(conn, target.Dir, manifest, target.Sudo); err != nil {
+				rr.SystemWarnings = append(rr.SystemWarnings,
+					fmt.Sprintf("manifest write failed — release tracking degraded: %v", err))
+			}
 			localDir := cfg.Release.LocalDir
 			if localDir == "" {
 				localDir = ".regis-releases"
 			}
-			SnapshotRelease(localDir, releaseID, manifest, remotePhase.Steps, rr.Results)
-			// Archive deployed files on remote via cp (no re-upload).
-			// Default remote release dir to <target.dir>/.regis-releases when not configured.
+			if snapWarns := SnapshotRelease(localDir, releaseID, manifest, remotePhase.Steps, rr.Results); len(snapWarns) > 0 {
+				rr.SystemWarnings = append(rr.SystemWarnings, snapWarns...)
+			}
 			releaseDir := cfg.Release.Dir
 			if releaseDir == "" {
 				releaseDir = path.Join(target.Dir, ".regis-releases")
 			}
-			_ = ArchiveRelease(conn, target.Dir, releaseDir, releaseID)
-			// Prune old releases if requested.
+			if err := ArchiveRelease(conn, target.Dir, releaseDir, releaseID); err != nil {
+				rr.SystemWarnings = append(rr.SystemWarnings,
+					fmt.Sprintf("remote archive failed — rollback from remote unavailable: %v", err))
+			}
 			if opts.PruneReleases {
 				keep := cfg.Release.Keep
 				if keep <= 0 {
@@ -343,7 +347,10 @@ func Run(ctx context.Context, cfg *config.Config, scenarioNames []string, target
 					"ls -dt %s/v* 2>/dev/null | tail -n +%d | xargs -r rm -rf 2>/dev/null; true",
 					releaseDir, keep+1,
 				)
-				_, _, _, _ = conn.Run(pruneCmd)
+				if _, _, code, runErr := conn.Run(pruneCmd); runErr != nil || code != 0 {
+					rr.SystemWarnings = append(rr.SystemWarnings,
+						fmt.Sprintf("remote release prune failed (exit %d)", code))
+				}
 				PruneLocalSnapshots(localDir, keep)
 			}
 		}

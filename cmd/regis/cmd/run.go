@@ -297,6 +297,9 @@ func newRunCommand(gf *GlobalFlags) *cobra.Command {
 							if res == nil {
 								return nil, 0, runErr
 							}
+							for _, w := range res.SystemWarnings {
+								fmt.Fprintf(os.Stderr, "\nwarn: %s\n", w)
+							}
 							return res.Results, res.Elapsed, runErr
 						},
 					)
@@ -320,6 +323,9 @@ func newRunCommand(gf *GlobalFlags) *cobra.Command {
 					os.Exit(1)
 				}
 				if result != nil {
+					for _, w := range result.SystemWarnings {
+						fmt.Fprintf(os.Stderr, "warn: %s\n", w)
+					}
 					fmt.Print(output.RenderTree(result.Results, tgtName, result.Elapsed, true, gf.Verbose, level, minfo))
 				}
 			}
