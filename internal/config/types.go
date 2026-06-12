@@ -29,13 +29,14 @@ type Config struct {
 }
 
 type Target struct {
-	Name   string `yaml:"name"`   // doc: Unique identifier; drives auto-discovery of .env.<name>
-	Host   string `yaml:"host"`   // doc: SSH hostname or IP; accepts ${VAR}
-	User   string `yaml:"user"`   // doc: SSH login user
-	Port   string `yaml:"port"`   // doc: SSH port (default 22); accepts ${VAR} for env-driven port
-	Dir    string `yaml:"dir"`    // doc: Remote working directory; relative dest paths anchor here
-	Sudo   bool   `yaml:"sudo"`   // doc: Global sudo default for this target; overridable per cue
-	Dotenv string `yaml:"dotenv"` // doc: Explicit env file path; overrides auto-discovery of .env.<name>
+	Name     string `yaml:"name"`     // doc: Unique identifier; drives auto-discovery of .env.<name>
+	Host     string `yaml:"host"`     // doc: SSH hostname or IP; accepts ${VAR}
+	User     string `yaml:"user"`     // doc: SSH login user
+	Port     string `yaml:"port"`     // doc: SSH port (default 22); accepts ${VAR} for env-driven port
+	Dir      string `yaml:"dir"`      // doc: Remote working directory; relative dest paths anchor here
+	Sudo     bool   `yaml:"sudo"`     // doc: Global sudo default for this target; overridable per cue
+	Dotenv   string `yaml:"dotenv"`   // doc: Explicit env file path; overrides auto-discovery of .env.<name>
+	Password string `yaml:"password"` // doc: SSH password (fallback when public-key auth fails); accepts ${VAR} — use password: ${APP_PASSWORD} and inject via .env or shell env
 }
 
 type RunConfig struct {
@@ -111,11 +112,14 @@ type Scenario struct {
 // File natures (binary/config/secret/render/pack): rollback: true restores the
 // previous remote state from the local release snapshot.
 // Action natures: rollback: "shell cmd" or {shell, sudo} runs a compensation command.
+// rollback: defer skips the reverse-order compensation phase and re-executes the
+// cue's shell command after all per-cue file restores complete.
 // Custom UnmarshalYAML handles the polymorphic forms.
 type CueRollback struct {
 	Enabled bool   // true = rollback active for this cue
 	Shell   string // compensation shell command (action natures only)
 	Sudo    bool   // run compensation with sudo
+	Defer   bool   // skip reverse compensation; re-run cue shell after file restores
 }
 
 // CueRef is one entry in a cue list — either an inline cue or a scenario reference.
@@ -128,9 +132,10 @@ type CueRef struct {
 
 	// Inline cue fields
 	Name            string            // doc: Unique within the scenario
-	Nature          string            // doc: binary | config | secret | action | generate | render | pack | service — inferred when manager: is set
+	Nature          string            // doc: binary | config | secret | action | generate | render | pack | service — inferred when manager: is set (→ service) or git: true (→ pack)
 	Local           bool              // doc: true = run on local machine (action only); default = run on SSH target
 	Src             StringOrList      // doc: Local source path — binary/secret: single file only; config: scalar path, glob string, or YAML list
+	Git             bool              // doc: Use git-tracked files from HEAD commit as the pack source (git ls-tree -r HEAD) — mutually exclusive with src:; .regisignore still applied; nature: pack inferred (pack only)
 	Dest            string            // doc: Remote destination; folder (trailing /) when src is glob or list
 	Shell           string            // doc: Shell command to execute (canonical field; cmd: is an alias)
 	Env             map[string]string // doc: Environment variables for local execution (key: value map)
@@ -154,5 +159,5 @@ type CueRef struct {
 	ServiceFile string            // doc: Local path to systemd unit file; uploaded to /etc/systemd/system/<name>.service when changed
 	Health      string            // doc: Health-check command (crontab watchdog)
 	Commands    map[string]string // doc: Override or extend manager commands (start, stop, restart, reload, deploy, status). Template vars: {name}, {binary}, {dir}, {service_file}. Action refs: {restart}, {reload}, etc. expand to the pre-override base command
-	Rollback    *CueRollback      // doc: Per-cue compensation on rollback — rollback: true restores previous file state for file natures; rollback: "cmd" or {shell, sudo} runs a command for action natures; infers on_error: rollback for the scenario
+	Rollback    *CueRollback      // doc: Per-cue compensation on rollback — rollback: true restores previous file state for file natures; rollback: "cmd" or {shell, sudo} runs a command for action natures; rollback: defer re-executes the cue shell after all per-cue file restores complete; infers on_error: rollback for the scenario
 }

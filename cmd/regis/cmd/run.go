@@ -24,6 +24,18 @@ var reservedNames = map[string]bool{
 	"env": true, "ai": true,
 }
 
+// populateRemoteFiles runs a single find on the target and stores the file set
+// in ctx so executors can skip download/MD5 round-trips for absent files.
+func populateRemoteFiles(ctx context.Context, conn cue.SSHConn, dir string) context.Context {
+	if conn == nil {
+		return ctx
+	}
+	if stdout, _, _, err := conn.Run(fmt.Sprintf("find %s -type f 2>/dev/null", dir)); err == nil {
+		ctx = cue.WithRemoteFiles(ctx, strings.Split(stdout, "\n"))
+	}
+	return ctx
+}
+
 // IsReservedScenarioName reports whether name is a built-in command name.
 func IsReservedScenarioName(name string) bool {
 	return reservedNames[name]
@@ -133,20 +145,40 @@ func newRunCommand(gf *GlobalFlags) *cobra.Command {
 			}
 			for _, tgtName := range selected {
 				var tgt config.Target
-				for _, t := range cfg.Targets {
-					if t.Name == tgtName {
-						tgt = t
+				for i := range cfg.Targets {
+					if cfg.Targets[i].Name == tgtName {
+						_ = config.InterpolateForTarget(cfg, &cfg.Targets[i])
+						tgt = cfg.Targets[i]
 						break
 					}
 				}
 
 				output.PrintOpeningQuote(level)
-				fmt.Printf("  connecting to %s...\n", tgtName)
+				if gf.Debug {
+					port := "22"
+					if tgt.Port != "" {
+						port = tgt.Port
+					}
+					fmt.Fprintf(os.Stderr, "[debug] dialing %s@%s:%s\n", tgt.User, tgt.Host, port)
+				}
+				spinner := output.NewSpinner(level, fmt.Sprintf("connecting to %s...", tgtName))
+				spinner.Start()
 
-				rawConn, _ := regssh.Dial(tgt)
+				rawConn, dialErr := regssh.Dial(tgt)
+				if gf.Debug && dialErr != nil {
+					fmt.Fprintf(os.Stderr, "[debug] dial error: %v\n", dialErr)
+				}
 				var conn cue.SSHConn
 				if rawConn != nil {
+					if expanded, err := rawConn.ExpandHome(tgt.Dir); err != nil {
+						fmt.Fprintf(os.Stderr, "FAILED  %s: %v\n", tgtName, err)
+						spinner.Stop()
+						os.Exit(1)
+					} else {
+						tgt.Dir = expanded
+					}
 					conn = WrapDebug(rawConn, gf.Debug)
+					spinner.Update(fmt.Sprintf("checking %s...", tgtName))
 				}
 
 				env, _ := config.BuildEnvForTarget(cfg, &tgt)
@@ -161,13 +193,19 @@ func newRunCommand(gf *GlobalFlags) *cobra.Command {
 					Service:  cue.NewServiceExecutor(conn, env),
 				}
 
+				ctx := populateRemoteFiles(context.Background(), conn, tgt.Dir)
+				if gf.Debug {
+					ctx = cue.WithDebugWriter(ctx, os.Stderr)
+				}
+				spinner.Update(fmt.Sprintf("deploying %s...", tgtName))
+
 				onResult := func(r cue.Result) {
 					if level < output.Level2 {
 						fmt.Printf("[%s] %-24s %s\n", tgtName, r.CueName, r.Status.Applied())
 					}
 				}
 
-				result, err := runner.Run(context.Background(), cfg, scenarioNames, tgt,
+				result, err := runner.Run(ctx, cfg, scenarioNames, tgt,
 					runner.Options{
 					DryRun:        gf.DryRun,
 					SkipConfirm:   gf.Yes,
@@ -175,6 +213,7 @@ func newRunCommand(gf *GlobalFlags) *cobra.Command {
 					PruneReleases: pruneReleases,
 				},
 					dispatch, onResult)
+				spinner.Stop()
 				if rawConn != nil {
 					rawConn.Close()
 				}

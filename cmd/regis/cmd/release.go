@@ -549,12 +549,26 @@ func withConn(gf *GlobalFlags, fn func(*regssh.Conn, config.Target, *config.Conf
 		return fmt.Errorf("no targets matched")
 	}
 	var tgt config.Target
-	for _, t := range cfg.Targets {
-		if t.Name == selected[0] {
-			tgt = t
+	for i := range cfg.Targets {
+		if cfg.Targets[i].Name == selected[0] {
+			if err := config.InterpolateForTarget(cfg, &cfg.Targets[i]); err != nil {
+				return err
+			}
+			tgt = cfg.Targets[i]
+			break
 		}
 	}
+	if gf.Debug {
+		port := "22"
+		if tgt.Port != "" {
+			port = tgt.Port
+		}
+		fmt.Fprintf(os.Stderr, "[debug] dialing %s@%s:%s\n", tgt.User, tgt.Host, port)
+	}
 	conn, err := regssh.Dial(tgt)
+	if gf.Debug && err != nil {
+		fmt.Fprintf(os.Stderr, "[debug] dial error: %v\n", err)
+	}
 	if err != nil {
 		return err
 	}

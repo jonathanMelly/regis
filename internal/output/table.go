@@ -199,7 +199,10 @@ func RenderTable(results []cue.Result, target string, total time.Duration, deplo
 		sb.WriteString(dataRow(padR(" "+g.label, col1), blank2, blank3, blank4) + "\n")
 		for _, r := range g.rows {
 			size := ""
-			if r.Size > 0 {
+			switch {
+			case r.FileTotal > 0:
+				size = fmt.Sprintf("%d/%d", r.FileChanged, r.FileTotal)
+			case r.Size > 0:
 				size = formatSize(r.Size)
 			}
 			elapsed := ""
@@ -277,7 +280,18 @@ func cueDetailLines(r cue.Result, showDiff bool, showStdout bool, minfo *Manifes
 		lines = append(lines, fmt.Sprintf("     remote now:    %s", truncate(r.RemoteMD5, 12)))
 	}
 
+	// Warnings — always shown regardless of status or verbosity.
+	for _, w := range r.Warnings {
+		lines = append(lines, fmt.Sprintf("  ⚠ %s: %s", r.CueName, w))
+	}
+
 	switch r.Status {
+	case cue.StatusEqual:
+		if r.Stdout != "" {
+			for _, l := range strings.Split(strings.TrimRight(r.Stdout, "\n"), "\n") {
+				lines = append(lines, "  "+l)
+			}
+		}
 	case cue.StatusFailed:
 		detail := resultDetail(r)
 		if detail != "" {
@@ -372,7 +386,10 @@ func RenderPlain(results []cue.Result, target string, total time.Duration, deplo
 			status = r.Status.Applied()
 		}
 		size := ""
-		if r.Size > 0 {
+		switch {
+		case r.FileTotal > 0:
+			size = fmt.Sprintf("%d/%d", r.FileChanged, r.FileTotal)
+		case r.Size > 0:
 			size = formatSize(r.Size)
 		}
 		elapsed := ""

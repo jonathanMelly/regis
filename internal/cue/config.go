@@ -40,6 +40,13 @@ func (e *ConfigExecutor) Execute(ctx context.Context, conn SSHConn, cr config.Cu
 	start := time.Now()
 	r := Result{CueName: cr.Name, Nature: "config", AffectsRelease: true}
 
+	if e.conn == nil {
+		r.Status = StatusFailed
+		r.Err = fmt.Errorf("config %q: no SSH connection available", cr.Name)
+		r.Elapsed = time.Since(start)
+		return r, nil
+	}
+
 	srcs, err := expandSrcResolved(cr.Src)
 	if err != nil {
 		r.Status = StatusFailed
@@ -73,18 +80,20 @@ func (e *ConfigExecutor) executeSingle(ctx context.Context, cr config.CueRef, ta
 		localContent = config.InterpolateString(localContent, e.env)
 	}
 
-	remoteData, err := e.conn.Download(remotePath)
-	if err != nil {
-		if cr.Sudo || target.Sudo {
-			quoted := "'" + strings.ReplaceAll(remotePath, "'", `'\''`) + "'"
-			if stdout, _, code, runErr := e.conn.RunSudo("cat " + quoted); runErr == nil && code == 0 {
-				remoteData = []byte(stdout)
-				err = nil
+	// Skip the download when we know the file doesn't exist on the target
+	// (populated by rdiff's bulk find — avoids one SFTP error per missing config file).
+	var remoteData []byte
+	if !RemoteFilesKnown(ctx) || RemoteFileExists(ctx, remotePath) {
+		var err error
+		remoteData, err = e.conn.Download(remotePath)
+		if err != nil {
+			if cr.Sudo || target.Sudo {
+				quoted := "'" + strings.ReplaceAll(remotePath, "'", `'\''`) + "'"
+				if stdout, _, code, runErr := e.conn.RunSudo("cat " + quoted); runErr == nil && code == 0 {
+					remoteData = []byte(stdout)
+				}
 			}
 		}
-	}
-	if err != nil {
-		remoteData = nil
 	}
 
 	fromLabel := "remote: " + remotePath
@@ -134,10 +143,12 @@ func (e *ConfigExecutor) executeMulti(ctx context.Context, cr config.CueRef, tar
 	useSudo := cr.Sudo || target.Sudo
 	dryRun := IsDryRun(ctx)
 	anyChanged := false
+	var changedCount int
 	var totalSize int64
 	var diffBuf strings.Builder
+	progressFn := FileProgressFrom(ctx)
 
-	for _, sf := range srcs {
+	for i, sf := range srcs {
 		localPath := sf.path
 		rel := remoteRelPath(localPath, sf.pattern)
 		// Convert forward slashes in rel to remote path separator.
@@ -156,21 +167,28 @@ func (e *ConfigExecutor) executeMulti(ctx context.Context, cr config.CueRef, tar
 			localContent = config.InterpolateString(localContent, e.env)
 		}
 
-		remoteData, err := e.conn.Download(remotePath)
-		if err != nil && (cr.Sudo || target.Sudo) {
-			quoted := "'" + strings.ReplaceAll(remotePath, "'", `'\''`) + "'"
-			if stdout, _, code, runErr := e.conn.RunSudo("cat " + quoted); runErr == nil && code == 0 {
-				remoteData = []byte(stdout)
+		var remoteData []byte
+		if !RemoteFilesKnown(ctx) || RemoteFileExists(ctx, remotePath) {
+			remoteData, err = e.conn.Download(remotePath)
+			if err != nil && (cr.Sudo || target.Sudo) {
+				quoted := "'" + strings.ReplaceAll(remotePath, "'", `'\''`) + "'"
+				if stdout, _, code, runErr := e.conn.RunSudo("cat " + quoted); runErr == nil && code == 0 {
+					remoteData = []byte(stdout)
+				}
 			}
 		}
 
 		fromLabel := "remote: " + remotePath
 		toLabel := "local: " + localPath
 		diff, changed := TextDiff(localContent, string(remoteData), fromLabel, toLabel)
+		if progressFn != nil {
+			progressFn(cr.Name, i+1, len(srcs))
+		}
 		if !changed {
 			continue
 		}
 		anyChanged = true
+		changedCount++
 		diffBuf.WriteString(diff)
 
 		if dryRun {
@@ -200,6 +218,8 @@ func (e *ConfigExecutor) executeMulti(ctx context.Context, cr config.CueRef, tar
 
 	if !anyChanged {
 		r.Status = StatusEqual
+		r.FileTotal = len(srcs)
+		r.FileChanged = 0
 		r.Elapsed = time.Since(start)
 		return r, nil
 	}
@@ -207,6 +227,8 @@ func (e *ConfigExecutor) executeMulti(ctx context.Context, cr config.CueRef, tar
 	r.Status = StatusChanged
 	r.Diff = strings.TrimRight(diffBuf.String(), "\n")
 	r.Size = totalSize
+	r.FileTotal = len(srcs)
+	r.FileChanged = changedCount
 	r.Elapsed = time.Since(start)
 	if !dryRun && cr.Post.Cmd != "" {
 		r.PostActions = []PostAction{{Cmd: cr.Post.Cmd, Sudo: cr.Post.Sudo || target.Sudo}}

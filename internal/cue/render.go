@@ -135,7 +135,10 @@ func (e *RenderExecutor) executeFile(ctx context.Context, cr config.CueRef, targ
 	}
 
 	remotePath := joinRemotePath(e.conn, target.Dir, cr.Dest)
-	remoteData, _ := e.conn.Download(remotePath)
+	var remoteData []byte
+	if !RemoteFilesKnown(ctx) || RemoteFileExists(ctx, remotePath) {
+		remoteData, _ = e.conn.Download(remotePath)
+	}
 
 	// Binary content: MD5 comparison; text content: unified diff.
 	if isBinaryContent(localData) || isBinaryContent(remoteData) {
@@ -227,9 +230,10 @@ func (e *RenderExecutor) executeFolder(ctx context.Context, cr config.CueRef, ta
 	var changedNames []string
 	var totalSize int64
 	var diffBuf strings.Builder
+	progressFn := FileProgressFrom(ctx)
 
 	localRelPaths := make(map[string]bool, len(localFiles))
-	for _, lf := range localFiles {
+	for i, lf := range localFiles {
 		localRelPaths[lf.relPath] = true
 		remoteFilePath := remoteDest + lf.relPath
 
@@ -241,7 +245,10 @@ func (e *RenderExecutor) executeFolder(ctx context.Context, cr config.CueRef, ta
 			return r, nil
 		}
 
-		remoteData, _ := e.conn.Download(remoteFilePath)
+		var remoteData []byte
+		if !RemoteFilesKnown(ctx) || RemoteFileExists(ctx, remoteFilePath) {
+			remoteData, _ = e.conn.Download(remoteFilePath)
+		}
 
 		var fileChanged bool
 		if isBinaryContent(localData) || isBinaryContent(remoteData) {
@@ -259,6 +266,10 @@ func (e *RenderExecutor) executeFolder(ctx context.Context, cr config.CueRef, ta
 			if changed {
 				diffBuf.WriteString(diff)
 			}
+		}
+
+		if progressFn != nil {
+			progressFn(cr.Name, i+1, len(localFiles))
 		}
 
 		if !fileChanged {
@@ -305,12 +316,16 @@ func (e *RenderExecutor) executeFolder(ctx context.Context, cr config.CueRef, ta
 	// Aggregate result.
 	if len(changedNames) == 0 && len(prunedNames) == 0 {
 		r.Status = StatusEqual
+		r.FileTotal = len(localRelPaths)
+		r.FileChanged = 0
 		r.Elapsed = time.Since(start)
 		return r, nil
 	}
 
 	r.Status = StatusChanged
 	r.Size = totalSize
+	r.FileTotal = len(localRelPaths)
+	r.FileChanged = len(changedNames)
 	r.Diff = strings.TrimRight(diffBuf.String(), "\n")
 
 	// Build Stdout summary shown by AppendDetails in -v mode.

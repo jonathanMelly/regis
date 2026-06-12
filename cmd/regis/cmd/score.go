@@ -16,6 +16,7 @@ func newScoreCommand(gf *GlobalFlags) *cobra.Command {
 	var format string
 	var compact bool
 	var sortMode string
+	var maxDepth int
 
 	c := &cobra.Command{
 		Use:     "score [scenario,...]",
@@ -64,7 +65,7 @@ Formats:
 			case format == "flow":
 				fmt.Print(score.RenderFlow(cfg, filter, sortMode))
 			default:
-				fmt.Print(score.RenderTree(cfg, filter, sortMode))
+				fmt.Print(score.RenderTree(cfg, filter, sortMode, maxDepth))
 			}
 			return nil
 		},
@@ -73,5 +74,6 @@ Formats:
 	c.Flags().StringVar(&format, "format", "tree", "output format: tree | flow")
 	c.Flags().BoolVar(&compact, "compact", false, "one line per scenario with cue list")
 	c.Flags().StringVar(&sortMode, "sort", "yaml", "scenario sort order: yaml | alpha")
+	c.Flags().IntVar(&maxDepth, "max-depth", 5, "max depth for expanding scenario refs (0 = no expansion)")
 	return c
 }

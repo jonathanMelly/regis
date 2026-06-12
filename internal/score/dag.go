@@ -9,8 +9,10 @@ import (
 	"git.disroot.org/jmy/regis/internal/config"
 )
 
+const defaultMaxDepth = 5
+
 // RenderTree renders each scenario as a card with ├─/└─ branches.
-// Order within each scenario: inline cues → scenario refs (*) → requirements (**).
+// Scenario refs (* name) are expanded inline up to maxDepth levels deep (default 5).
 // Uppercase-initial scenarios (public entry-points) appear first, then lowercase
 // building blocks, both groups in YAML declaration order (sortMode="yaml") or
 // alphabetically (sortMode="alpha").
@@ -25,7 +27,12 @@ import (
 //	build    Build binaries
 //	  ├─ @ bins  (local)
 //	  └─ ** checks
-func RenderTree(cfg *config.Config, filter []string, sortMode string) string {
+func RenderTree(cfg *config.Config, filter []string, sortMode string, maxDepth ...int) string {
+	md := defaultMaxDepth
+	if len(maxDepth) > 0 && maxDepth[0] >= 0 {
+		md = maxDepth[0]
+	}
+
 	var sb strings.Builder
 
 	if len(cfg.Targets) > 0 {
@@ -42,7 +49,7 @@ func RenderTree(cfg *config.Config, filter []string, sortMode string) string {
 			sb.WriteString(name + "\n")
 		}
 
-		writeScenarioTree(&sb, sc)
+		writeScenarioTreeDepth(&sb, sc, cfg, "  ", 0, md, []string{name})
 
 		if i < len(names)-1 {
 			sb.WriteString("\n")
@@ -228,38 +235,108 @@ func scenarioDepths(scenarios map[string]config.Scenario, names []string) map[st
 	return depths
 }
 
-// scenarioItems returns all display labels for a scenario in logical sequence:
-// 1. requirements (** name) — what must run first
-// 2. inline cues — what this scenario does
-// 3. scenario refs (* name) — embedded scenario expansions
+// scenarioItems returns all display labels for a scenario in YAML declaration order:
+// requirements (** name) first, then cues in the order they appear in the config.
 func scenarioItems(sc config.Scenario) []string {
 	var items []string
 	for _, req := range sc.Requires {
 		items = append(items, "** "+req)
 	}
 	for _, cr := range sc.Cues {
-		if cr.ScenarioRef == "" {
-			items = append(items, cueLabel(cr))
-		}
-	}
-	for _, cr := range sc.Cues {
-		if cr.ScenarioRef != "" {
-			items = append(items, cueLabel(cr))
-		}
+		items = append(items, cueLabel(cr))
 	}
 	return items
 }
 
-// writeScenarioTree writes the ├─/└─ branch lines for a scenario.
-func writeScenarioTree(sb *strings.Builder, sc config.Scenario) {
-	items := scenarioItems(sc)
-	for i, label := range items {
-		branch := "  ├─ "
-		if i == len(items)-1 {
-			branch = "  └─ "
-		}
-		sb.WriteString(branch + label + "\n")
+// treeEntry is one line in the scenario tree, with optional expansion metadata.
+type treeEntry struct {
+	label       string
+	scenarioRef string   // non-empty when this is a * scenario ref (expandable)
+	narrowCue   string   // single-cue filter from NarrowCue
+	cueNames    []string // multi-cue filter from CueNames
+}
+
+// collectTreeEntries returns display entries for a scenario in declaration order:
+// requires lines (** name) first, then cues.
+func collectTreeEntries(sc config.Scenario) []treeEntry {
+	var entries []treeEntry
+	for _, req := range sc.Requires {
+		entries = append(entries, treeEntry{label: "** " + req})
 	}
+	for _, cr := range sc.Cues {
+		entries = append(entries, treeEntry{
+			label:       cueLabel(cr),
+			scenarioRef: cr.ScenarioRef,
+			narrowCue:   cr.NarrowCue,
+			cueNames:    []string(cr.CueNames),
+		})
+	}
+	return entries
+}
+
+// writeScenarioTreeDepth writes ├─/└─ branch lines for sc, recursively expanding
+// scenario refs up to maxDepth levels. indent is prepended before the branch character.
+// ancestors tracks scenario names on the current expansion path for cycle detection.
+func writeScenarioTreeDepth(sb *strings.Builder, sc config.Scenario, cfg *config.Config, indent string, depth, maxDepth int, ancestors []string) {
+	entries := collectTreeEntries(sc)
+	for i, entry := range entries {
+		isLast := i == len(entries)-1
+		branch := "├─ "
+		if isLast {
+			branch = "└─ "
+		}
+		sb.WriteString(indent + branch + entry.label + "\n")
+
+		if entry.scenarioRef == "" || depth >= maxDepth {
+			continue
+		}
+		for _, a := range ancestors {
+			if a == entry.scenarioRef {
+				goto next
+			}
+		}
+		if refSc, ok := cfg.Scenarios[entry.scenarioRef]; ok {
+			refSc = narrowScenario(refSc, entry.narrowCue, entry.cueNames)
+			if len(refSc.Cues) > 0 || len(refSc.Requires) > 0 {
+				cont := "│   "
+				if isLast {
+					cont = "    "
+				}
+				writeScenarioTreeDepth(sb, refSc, cfg, indent+cont, depth+1, maxDepth, append(ancestors, entry.scenarioRef))
+			}
+		}
+	next:
+	}
+}
+
+// narrowScenario returns a copy of sc filtered to the named cue(s) when a narrow ref is used.
+func narrowScenario(sc config.Scenario, narrowCue string, cueNames []string) config.Scenario {
+	if narrowCue == "" && len(cueNames) == 0 {
+		return sc
+	}
+	sc.Requires = nil
+	if narrowCue != "" {
+		for _, cr := range sc.Cues {
+			if cr.Name == narrowCue {
+				sc.Cues = []config.CueRef{cr}
+				return sc
+			}
+		}
+		sc.Cues = nil
+		return sc
+	}
+	set := make(map[string]bool, len(cueNames))
+	for _, n := range cueNames {
+		set[n] = true
+	}
+	filtered := sc.Cues[:0:0]
+	for _, cr := range sc.Cues {
+		if set[cr.Name] {
+			filtered = append(filtered, cr)
+		}
+	}
+	sc.Cues = filtered
+	return sc
 }
 
 // cueLabel formats a single cue ref for display.
@@ -320,7 +397,7 @@ func writeServices(sb *strings.Builder, cfg *config.Config) {
 
 func legendLine() string {
 	// § = CP437 char 21, @ = arobase, & = ampersand — all ConEmu-safe
-	return "legend  ! binary  # config  § secret  @ action  ~ render  + generate  & service  * ref  ** requires\n"
+	return "legend  ! binary  # config  § secret  @ action  ~ render  % pack  + generate  & service  * ref  ** requires\n"
 }
 
 // natureSymbol returns a terminal-safe symbol for each cue nature.

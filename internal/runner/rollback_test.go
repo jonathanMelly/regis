@@ -590,6 +590,129 @@ func TestExecuteRollback_scenarioLevelRollback_runs(t *testing.T) {
 	}
 }
 
+// ── rollback: defer ────────────────────────────────────────────────────────────
+
+// TestExecuteRollback_defer_runsAfterFileRestores verifies that a deferred cue's
+// shell runs AFTER pack file restores, not before.
+func TestExecuteRollback_defer_runsAfterFileRestores(t *testing.T) {
+	dir := t.TempDir()
+	prevID := "v20260601-120000"
+	makeTestSnapshot(t, dir, prevID, ReleaseManifest{
+		Release: prevID,
+		CueArtifacts: map[string]map[string]string{
+			"vendor": {"vendor/autoload.php": "/var/www/vendor/autoload.php"},
+		},
+	}, map[string][]byte{"vendor/autoload.php": []byte("<?php // prev")})
+
+	var order []string
+	conn := &mockSSHConn{
+		uploadFn: func(_ []byte, remote string) { order = append(order, "upload:"+remote) },
+		runFn:    func(cmd string) { order = append(order, "run:"+cmd) },
+	}
+
+	cfg := &config.Config{Scenarios: map[string]config.Scenario{"Deploy": {}}}
+	steps := []Step{
+		{CueRef: config.CueRef{Name: "vendor", Nature: "pack",
+			Rollback: &config.CueRollback{Enabled: true}}},
+		{CueRef: config.CueRef{Name: "install-deps", Nature: "action", Shell: "composer install",
+			Rollback: &config.CueRollback{Enabled: true, Defer: true}}},
+	}
+	results := []cue.Result{
+		{CueName: "vendor", Status: cue.StatusChanged},
+		{CueName: "install-deps", Status: cue.StatusChanged},
+	}
+
+	out := executeRollback(context.Background(), conn, cfg, nil,
+		"v20260607-fail", dir, config.Target{}, Dispatch{}, nil, results, steps)
+
+	if out.Err != nil {
+		t.Fatalf("unexpected error: %v", out.Err)
+	}
+	// File restore must happen before composer install.
+	if len(order) != 2 {
+		t.Fatalf("expected 2 operations, got %v", order)
+	}
+	if order[0] != "upload:/var/www/vendor/autoload.php" {
+		t.Errorf("expected file restore first, got %q", order[0])
+	}
+	if order[1] != "run:composer install" {
+		t.Errorf("expected deferred run second, got %q", order[1])
+	}
+}
+
+// TestExecuteRollback_defer_notRunInReversePhase verifies the deferred cue is
+// excluded from reverse-order compensation.
+func TestExecuteRollback_defer_notRunInReversePhase(t *testing.T) {
+	dir := t.TempDir()
+	prevID := "v20260601-120000"
+	makeTestSnapshot(t, dir, prevID, ReleaseManifest{Release: prevID}, nil)
+
+	var runCmds []string
+	conn := &mockSSHConn{runFn: func(cmd string) { runCmds = append(runCmds, cmd) }}
+
+	cfg := &config.Config{Scenarios: map[string]config.Scenario{"Deploy": {}}}
+	steps := []Step{
+		{CueRef: config.CueRef{Name: "a", Nature: "action",
+			Rollback: &config.CueRollback{Enabled: true, Shell: "undo-a"}}},
+		{CueRef: config.CueRef{Name: "b", Nature: "action", Shell: "run-b",
+			Rollback: &config.CueRollback{Enabled: true, Defer: true}}},
+		{CueRef: config.CueRef{Name: "c", Nature: "action",
+			Rollback: &config.CueRollback{Enabled: true, Shell: "undo-c"}}},
+	}
+	results := []cue.Result{
+		{CueName: "a", Status: cue.StatusChanged},
+		{CueName: "b", Status: cue.StatusChanged},
+		{CueName: "c", Status: cue.StatusChanged},
+	}
+
+	out := executeRollback(context.Background(), conn, cfg, nil,
+		"v20260607-fail", dir, config.Target{}, Dispatch{}, nil, results, steps)
+
+	if out.Err != nil {
+		t.Fatalf("unexpected error: %v", out.Err)
+	}
+	// Expect: undo-c (reverse), undo-a (reverse), run-b (deferred, forward)
+	want := []string{"undo-c", "undo-a", "run-b"}
+	if len(runCmds) != 3 || runCmds[0] != want[0] || runCmds[1] != want[1] || runCmds[2] != want[2] {
+		t.Errorf("expected order %v, got %v", want, runCmds)
+	}
+}
+
+// TestExecuteRollback_defer_multipleRunInForwardOrder verifies multiple deferred
+// cues run in their original forward execution order.
+func TestExecuteRollback_defer_multipleRunInForwardOrder(t *testing.T) {
+	dir := t.TempDir()
+	prevID := "v20260601-120000"
+	makeTestSnapshot(t, dir, prevID, ReleaseManifest{Release: prevID}, nil)
+
+	var runCmds []string
+	conn := &mockSSHConn{runFn: func(cmd string) { runCmds = append(runCmds, cmd) }}
+
+	cfg := &config.Config{Scenarios: map[string]config.Scenario{"Deploy": {}}}
+	steps := []Step{
+		{CueRef: config.CueRef{Name: "x", Nature: "action", Shell: "run-x",
+			Rollback: &config.CueRollback{Enabled: true, Defer: true}}},
+		{CueRef: config.CueRef{Name: "y", Nature: "action", Shell: "run-y",
+			Rollback: &config.CueRollback{Enabled: true, Defer: true}}},
+	}
+	results := []cue.Result{
+		{CueName: "x", Status: cue.StatusChanged},
+		{CueName: "y", Status: cue.StatusChanged},
+	}
+
+	out := executeRollback(context.Background(), conn, cfg, nil,
+		"v20260607-fail", dir, config.Target{}, Dispatch{}, nil, results, steps)
+
+	if out.Err != nil {
+		t.Fatalf("unexpected error: %v", out.Err)
+	}
+	// Forward order: x then y (not reversed).
+	want := []string{"run-x", "run-y"}
+	if len(runCmds) != 2 || runCmds[0] != want[0] || runCmds[1] != want[1] {
+		t.Errorf("expected forward order %v, got %v", want, runCmds)
+	}
+}
+
 func TestExecuteRollback_packNature_restoresAllFiles(t *testing.T) {
 	dir := t.TempDir()
 	prevID := "v20260601-120000"

@@ -146,6 +146,89 @@ scenarios:
 	}
 }
 
+// ── git: true ─────────────────────────────────────────────────────────────────
+
+func TestValidateYAML_gitTrue_infersPack(t *testing.T) {
+	cfg := mustLoad(t, `
+scenarios:
+  deploy:
+    cues:
+      - name: app
+        git: true
+        dest: /var/www/
+`)
+	cr := cfg.Scenarios["deploy"].Cues[0]
+	if cr.Nature != "pack" {
+		t.Errorf("want nature=pack inferred from git: true, got %q", cr.Nature)
+	}
+	if !cr.Git {
+		t.Error("want Git=true on parsed cue")
+	}
+}
+
+func TestValidateYAML_gitTrue_withSrc_error(t *testing.T) {
+	msg := mustFail(t, `
+scenarios:
+  deploy:
+    cues:
+      - name: app
+        git: true
+        src: dist/**
+        dest: /var/www/
+`)
+	if !strings.Contains(msg, "mutually exclusive") {
+		t.Errorf("expected 'mutually exclusive' in error, got %q", msg)
+	}
+}
+
+func TestValidateYAML_gitTrue_wrongNature_error(t *testing.T) {
+	msg := mustFail(t, `
+scenarios:
+  deploy:
+    cues:
+      - name: app
+        nature: config
+        git: true
+        dest: /var/www/
+`)
+	if !strings.Contains(msg, "nature: pack") {
+		t.Errorf("expected 'nature: pack' in error, got %q", msg)
+	}
+}
+
+// ── rollback: defer ───────────────────────────────────────────────────────────
+
+func TestValidateYAML_rollbackDefer_valid(t *testing.T) {
+	cfg := mustLoad(t, `
+scenarios:
+  deploy:
+    cues:
+      - name: install-deps
+        shell: composer install
+        rollback: defer
+`)
+	cr := cfg.Scenarios["deploy"].Cues[0]
+	if cr.Rollback == nil || !cr.Rollback.Defer {
+		t.Errorf("want Defer=true, got %+v", cr.Rollback)
+	}
+}
+
+func TestValidateYAML_rollbackDefer_noShell_error(t *testing.T) {
+	msg := mustFail(t, `
+scenarios:
+  deploy:
+    cues:
+      - name: pack-cue
+        nature: pack
+        src: vendor/**
+        dest: ./
+        rollback: defer
+`)
+	if !strings.Contains(msg, "shell:") {
+		t.Errorf("expected 'shell:' in error message, got %q", msg)
+	}
+}
+
 // ── all known natures accepted via YAML ──────────────────────────────────────
 
 func TestValidateYAML_allKnownNatures_parseWithoutError(t *testing.T) {

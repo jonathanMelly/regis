@@ -2,11 +2,16 @@
 // doc:nature pack
 // Ships a local file tree to a remote directory.
 // src: is an allowlist of glob patterns; .regisignore in the working directory is the denylist.
-// Each matched file is compared with its remote counterpart (MD5 by default; text diff with diff: text).
+// git: true uses the current HEAD commit's file tree (git ls-tree -r HEAD) as the source
+// instead of src: glob patterns. .regisignore is still applied as a denylist. Requires the
+// working directory to be inside a git repository with at least one commit. src: and git: true
+// are mutually exclusive; nature: pack is inferred when git: true is set without nature:.
+// Each matched file is compared with its remote counterpart (MD5 by default; text diff with diff_mode: text).
 // Only changed files are uploaded. prune: true removes remote files absent from the local set.
 // Paths are preserved relative to each glob root:
 //
 //	src: application/**  dest: /var/www/  →  application/img/logo.png  →  /var/www/img/logo.png
+//	git: true            dest: /var/www/  →  cmd/main.go               →  /var/www/cmd/main.go
 //
 // Direction: local → remote. Always release-affecting.
 //
@@ -25,6 +30,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path"
 	"sort"
 	"strconv"
@@ -65,12 +71,39 @@ func (e *PackExecutor) Execute(ctx context.Context, conn SSHConn, cr config.CueR
 		return r, nil
 	}
 
-	srcs, err := expandSrcResolved(cr.Src)
-	if err != nil {
-		r.Status = StatusFailed
-		r.Err = fmt.Errorf("pack %q: expand src: %w", cr.Name, err)
-		r.Elapsed = time.Since(start)
-		return r, nil
+	var (
+		srcs []resolvedSrc
+		err  error
+	)
+	var gitRef string
+	if cr.Git {
+		srcs, err = expandSrcFromGit()
+		if err != nil {
+			r.Status = StatusFailed
+			r.Err = fmt.Errorf("pack %q: %w", cr.Name, err)
+			r.Elapsed = time.Since(start)
+			return r, nil
+		}
+		gitRef = gitShortHash()
+		staged, untracked := gitUncommittedInfo()
+		if len(staged) > 0 {
+			r.Warnings = append(r.Warnings, fmt.Sprintf(
+				"%d staged file(s) not committed — will NOT be deployed: %s",
+				len(staged), joinFiles(staged, 5)))
+		}
+		if len(untracked) > 0 {
+			r.Warnings = append(r.Warnings, fmt.Sprintf(
+				"%d untracked file(s) will NOT be deployed: %s",
+				len(untracked), joinFiles(untracked, 5)))
+		}
+	} else {
+		srcs, err = expandSrcResolved(cr.Src)
+		if err != nil {
+			r.Status = StatusFailed
+			r.Err = fmt.Errorf("pack %q: expand src: %w", cr.Name, err)
+			r.Elapsed = time.Since(start)
+			return r, nil
+		}
 	}
 
 	ignorePatterns, err := loadIgnorePatterns(".")
@@ -102,6 +135,8 @@ func (e *PackExecutor) Execute(ctx context.Context, conn SSHConn, cr config.CueR
 	var totalSize int64
 	var diffBuf strings.Builder
 	localRelPaths := make(map[string]bool, len(srcs))
+	progressFn := FileProgressFrom(ctx)
+	var scanned int
 
 	for _, sf := range srcs {
 		rel := remoteRelPath(sf.path, sf.pattern)
@@ -121,38 +156,66 @@ func (e *PackExecutor) Execute(ctx context.Context, conn SSHConn, cr config.CueR
 			return r, nil
 		}
 
-		remoteData, _ := e.conn.Download(remotePath)
+		// Skip the download when we know the file is absent on the target.
+		var remoteData []byte
+		remoteMissing := RemoteFilesKnown(ctx) && !RemoteFileExists(ctx, remotePath)
+		if !remoteMissing {
+			remoteData, _ = e.conn.Download(remotePath)
+			if remoteData == nil {
+				remoteMissing = true
+			}
+		}
+
+		remoteLabel := func(rmd5 string) string {
+			if remoteMissing {
+				return "missing"
+			}
+			return truncateMD5(rmd5)
+		}
 
 		var fileChanged bool
 		switch diffMode {
 		case "text":
-			diff, changed := TextDiff(string(localData), string(remoteData), "remote:"+rel, "local:"+rel)
-			fileChanged = changed
-			if changed {
+			remoteStr := "remote:" + rel
+			if remoteMissing {
+				remoteStr = "(missing)"
+			}
+			diff, changed := TextDiff(string(localData), string(remoteData), remoteStr, "local:"+rel)
+			fileChanged = changed || remoteMissing
+			if fileChanged {
 				diffBuf.WriteString(diff)
 			}
 		case "auto":
-			if isBinaryContent(localData) || isBinaryContent(remoteData) {
+			if isBinaryContent(localData) || (!remoteMissing && isBinaryContent(remoteData)) {
 				lmd5 := localMD5bytes(localData)
 				rmd5 := localMD5bytes(remoteData)
-				fileChanged = lmd5 != rmd5
+				fileChanged = remoteMissing || lmd5 != rmd5
 				if fileChanged {
-					fmt.Fprintf(&diffBuf, "binary %s  remote:%s  local:%s\n", rel, truncateMD5(rmd5), truncateMD5(lmd5))
+					fmt.Fprintf(&diffBuf, "binary %s  remote:%s  local:%s\n", rel, remoteLabel(rmd5), truncateMD5(lmd5))
 				}
 			} else {
-				diff, changed := TextDiff(string(localData), string(remoteData), "remote:"+rel, "local:"+rel)
-				fileChanged = changed
-				if changed {
+				remoteStr := "remote:" + rel
+				if remoteMissing {
+					remoteStr = "(missing)"
+				}
+				diff, changed := TextDiff(string(localData), string(remoteData), remoteStr, "local:"+rel)
+				fileChanged = changed || remoteMissing
+				if fileChanged {
 					diffBuf.WriteString(diff)
 				}
 			}
 		default: // "binary"
 			lmd5 := localMD5bytes(localData)
 			rmd5 := localMD5bytes(remoteData)
-			fileChanged = lmd5 != rmd5
+			fileChanged = remoteMissing || lmd5 != rmd5
 			if fileChanged {
-				fmt.Fprintf(&diffBuf, "binary %s  remote:%s  local:%s\n", rel, truncateMD5(rmd5), truncateMD5(lmd5))
+				fmt.Fprintf(&diffBuf, "binary %s  remote:%s  local:%s\n", rel, remoteLabel(rmd5), truncateMD5(lmd5))
 			}
+		}
+
+		scanned++
+		if progressFn != nil {
+			progressFn(cr.Name, scanned, len(srcs))
 		}
 
 		if !fileChanged {
@@ -210,18 +273,33 @@ func (e *PackExecutor) Execute(ctx context.Context, conn SSHConn, cr config.CueR
 	// but do not flip the status — the remote is still in sync.
 	if len(changedNames) == 0 && !pr.affected {
 		r.Status = StatusEqual
-		if pr.report != "" {
-			r.Stdout = pr.report // tier-3 info: show unmanaged candidates
+		var equalStdout strings.Builder
+		if gitRef != "" {
+			fmt.Fprintf(&equalStdout, "commit %s", gitRef)
 		}
+		if pr.report != "" {
+			if equalStdout.Len() > 0 {
+				equalStdout.WriteString("\n")
+			}
+			equalStdout.WriteString(pr.report)
+		}
+		r.Stdout = equalStdout.String()
+		r.FileTotal = len(localRelPaths)
+		r.FileChanged = 0
 		r.Elapsed = time.Since(start)
 		return r, nil
 	}
 
 	r.Status = StatusChanged
 	r.Size = totalSize
+	r.FileTotal = len(localRelPaths)
+	r.FileChanged = len(changedNames)
 	r.Diff = strings.TrimRight(diffBuf.String(), "\n")
 
 	var summary strings.Builder
+	if gitRef != "" {
+		fmt.Fprintf(&summary, "commit %s\n", gitRef)
+	}
 	if len(changedNames) > 0 {
 		fmt.Fprintf(&summary, "%d file(s) changed: %s", len(changedNames), strings.Join(changedNames, ", "))
 	}
@@ -231,7 +309,7 @@ func (e *PackExecutor) Execute(ctx context.Context, conn SSHConn, cr config.CueR
 		}
 		summary.WriteString(pr.report)
 	}
-	r.Stdout = summary.String()
+	r.Stdout = strings.TrimRight(summary.String(), "\n")
 
 	if !dryRun && cr.Post.Cmd != "" {
 		r.PostActions = []PostAction{{Cmd: cr.Post.Cmd, Sudo: cr.Post.Sudo || target.Sudo}}
@@ -543,6 +621,61 @@ func destRelativeToTarget(dest string) (string, bool) {
 		return "", false
 	}
 	return dest, true
+}
+
+// gitShortHash returns the short commit hash of HEAD, or "" on error.
+func gitShortHash() string {
+	out, err := exec.Command("git", "rev-parse", "--short", "HEAD").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// gitUncommittedInfo returns lists of staged (indexed but not committed) and
+// untracked (non-ignored) files in the current working directory.
+func gitUncommittedInfo() (staged, untracked []string) {
+	if out, err := exec.Command("git", "diff", "--cached", "--name-only").Output(); err == nil {
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			if line != "" {
+				staged = append(staged, line)
+			}
+		}
+	}
+	if out, err := exec.Command("git", "ls-files", "--others", "--exclude-standard").Output(); err == nil {
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			if line != "" {
+				untracked = append(untracked, line)
+			}
+		}
+	}
+	return
+}
+
+// joinFiles joins up to limit file names; appends "... and N more" when the list is longer.
+func joinFiles(files []string, limit int) string {
+	if len(files) <= limit {
+		return strings.Join(files, ", ")
+	}
+	return strings.Join(files[:limit], ", ") + fmt.Sprintf(", ... and %d more", len(files)-limit)
+}
+
+// expandSrcFromGit runs git ls-tree -r HEAD --name-only and returns the committed file
+// list as resolvedSrc entries. pattern is set to "**" so remoteRelPath preserves the
+// full relative path (tree mode, no root stripping).
+func expandSrcFromGit() ([]resolvedSrc, error) {
+	out, err := exec.Command("git", "ls-tree", "-r", "HEAD", "--name-only").Output()
+	if err != nil {
+		return nil, fmt.Errorf("git ls-tree: not in a git repository or HEAD has no commits")
+	}
+	var result []resolvedSrc
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line == "" {
+			continue
+		}
+		result = append(result, resolvedSrc{path: line, pattern: "**"})
+	}
+	return result, nil
 }
 
 // packCandidate is a remote file that is not in the local managed set.

@@ -4,6 +4,8 @@ package cue_test
 import (
 	"context"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -317,4 +319,223 @@ func TestPackExecutor_dryRunSkipsUploadAndPrune(t *testing.T) {
 	}
 	// upload path is only set on real uploads; since we don't track per-call we
 	// verify indirectly that the manifest was NOT written (runFunc not called for upload)
+}
+
+// ---- git: true tests ---------------------------------------------------------
+
+// initGitRepo creates a temp directory, writes files, and commits them.
+// Uses git -C so no chdir is required here.
+func initGitRepo(t *testing.T, files map[string]string) string {
+	t.Helper()
+	dir := t.TempDir()
+	for rel, content := range files {
+		full := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, args := range [][]string{
+		{"init"},
+		{"-c", "user.email=t@t.com", "-c", "user.name=T", "add", "."},
+		{"-c", "user.email=t@t.com", "-c", "user.name=T", "commit", "-m", "init"},
+	} {
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	return dir
+}
+
+// chdirTemp changes the working directory for the duration of the test.
+// Not safe for parallel tests that also use chdirTemp.
+func chdirTemp(t *testing.T, dir string) {
+	t.Helper()
+	orig, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chdir(orig) })
+}
+
+func TestExpandSrcFromGit_returnsCommittedFiles(t *testing.T) {
+	dir := initGitRepo(t, map[string]string{
+		"index.html":    "<html/>",
+		"css/style.css": "body{}",
+	})
+	chdirTemp(t, dir)
+
+	paths, err := cue.ExpandSrcFromGit()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := map[string]bool{"index.html": true, "css/style.css": true}
+	for _, p := range paths {
+		delete(want, p)
+	}
+	if len(want) != 0 {
+		t.Errorf("missing committed paths: %v (got %v)", want, paths)
+	}
+}
+
+func TestExpandSrcFromGit_noGitRepo_error(t *testing.T) {
+	chdirTemp(t, t.TempDir()) // plain dir, no git init
+	_, err := cue.ExpandSrcFromGit()
+	if err == nil {
+		t.Error("expected error outside a git repository")
+	}
+}
+
+func TestPackExecutor_gitTrue_uploadsCommittedFiles(t *testing.T) {
+	dir := initGitRepo(t, map[string]string{
+		"index.html":    "content a",
+		"css/style.css": "content b",
+	})
+	chdirTemp(t, dir)
+
+	mock := &mockConn{
+		downloads: map[string][]byte{}, // all absent on remote → all changed
+		runFunc:   func(cmd string) (string, string, int, error) { return "", "", 0, nil },
+	}
+	ex := cue.NewPackExecutor(mock)
+	cr := config.CueRef{Name: "app", Nature: "pack", Git: true, Dest: "/www"}
+	r, err := ex.Execute(context.Background(), nil, cr, config.Target{Dir: "/opt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Status != cue.StatusChanged {
+		t.Errorf("expected StatusChanged, got %v stdout=%q", r.Status, r.Stdout)
+	}
+	for _, want := range []string{"index.html", "css/style.css"} {
+		if !strings.Contains(r.Stdout, want) {
+			t.Errorf("expected %q in changed output, got %q", want, r.Stdout)
+		}
+	}
+}
+
+func TestPackExecutor_gitTrue_showsCommitHash_changed(t *testing.T) {
+	dir := initGitRepo(t, map[string]string{"index.html": "content"})
+	chdirTemp(t, dir)
+
+	mock := &mockConn{
+		downloads: map[string][]byte{},
+		runFunc:   func(cmd string) (string, string, int, error) { return "", "", 0, nil },
+	}
+	ex := cue.NewPackExecutor(mock)
+	cr := config.CueRef{Name: "app", Nature: "pack", Git: true, Dest: "/www"}
+	r, _ := ex.Execute(context.Background(), nil, cr, config.Target{Dir: "/opt"})
+
+	if r.Status != cue.StatusChanged {
+		t.Fatalf("expected StatusChanged, got %v", r.Status)
+	}
+	if !strings.Contains(r.Stdout, "commit ") {
+		t.Errorf("expected commit hash in Stdout, got %q", r.Stdout)
+	}
+}
+
+func TestPackExecutor_gitTrue_showsCommitHash_equal(t *testing.T) {
+	dir := initGitRepo(t, map[string]string{"index.html": "content"})
+	chdirTemp(t, dir)
+
+	mock := &mockConn{
+		downloads: map[string][]byte{"/www/index.html": []byte("content")}, // remote matches
+		runFunc:   func(cmd string) (string, string, int, error) { return "", "", 0, nil },
+	}
+	ex := cue.NewPackExecutor(mock)
+	cr := config.CueRef{Name: "app", Nature: "pack", Git: true, Dest: "/www"}
+	r, _ := ex.Execute(context.Background(), nil, cr, config.Target{Dir: "/opt"})
+
+	if r.Status != cue.StatusEqual {
+		t.Fatalf("expected StatusEqual, got %v stdout=%q", r.Status, r.Stdout)
+	}
+	if !strings.Contains(r.Stdout, "commit ") {
+		t.Errorf("expected commit hash in Stdout even when equal, got %q", r.Stdout)
+	}
+}
+
+func TestPackExecutor_gitTrue_warnsStagedFiles(t *testing.T) {
+	dir := initGitRepo(t, map[string]string{"committed.go": "v1"})
+	chdirTemp(t, dir)
+	// Stage a new file without committing
+	os.WriteFile("staged.go", []byte("new"), 0644)
+	exec.Command("git", "-C", dir, "add", "staged.go").Run()
+
+	mock := &mockConn{
+		downloads: map[string][]byte{},
+		runFunc:   func(cmd string) (string, string, int, error) { return "", "", 0, nil },
+	}
+	ex := cue.NewPackExecutor(mock)
+	r, _ := ex.Execute(context.Background(), nil,
+		config.CueRef{Name: "app", Nature: "pack", Git: true, Dest: "/www"},
+		config.Target{Dir: "/opt"})
+
+	var found bool
+	for _, w := range r.Warnings {
+		if strings.Contains(w, "staged") && strings.Contains(w, "staged.go") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected staged-file warning, got Warnings=%v", r.Warnings)
+	}
+}
+
+func TestPackExecutor_gitTrue_warnsUntrackedFiles(t *testing.T) {
+	dir := initGitRepo(t, map[string]string{"main.go": "v1"})
+	chdirTemp(t, dir)
+	os.WriteFile("untracked.go", []byte("new"), 0644) // not added to git
+
+	mock := &mockConn{
+		downloads: map[string][]byte{},
+		runFunc:   func(cmd string) (string, string, int, error) { return "", "", 0, nil },
+	}
+	ex := cue.NewPackExecutor(mock)
+	r, _ := ex.Execute(context.Background(), nil,
+		config.CueRef{Name: "app", Nature: "pack", Git: true, Dest: "/www"},
+		config.Target{Dir: "/opt"})
+
+	var found bool
+	for _, w := range r.Warnings {
+		if strings.Contains(w, "untracked") && strings.Contains(w, "untracked.go") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected untracked-file warning, got Warnings=%v", r.Warnings)
+	}
+}
+
+func TestPackExecutor_gitTrue_respectsRegisignore(t *testing.T) {
+	dir := initGitRepo(t, map[string]string{
+		"keep.html": "keep",
+		"skip.html": "skip", // committed but filtered at deploy time
+	})
+	chdirTemp(t, dir)
+	// .regisignore is a deploy-time denylist — not required to be in git
+	if err := os.WriteFile(".regisignore", []byte("skip.html\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mock := &mockConn{
+		downloads: map[string][]byte{},
+		runFunc:   func(cmd string) (string, string, int, error) { return "", "", 0, nil },
+	}
+	ex := cue.NewPackExecutor(mock)
+	cr := config.CueRef{Name: "web", Nature: "pack", Git: true, Dest: "/www"}
+	r, err := ex.Execute(context.Background(), nil, cr, config.Target{Dir: "/opt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(r.Stdout, "skip.html") {
+		t.Errorf(".regisignore should have excluded skip.html; stdout=%q", r.Stdout)
+	}
+	if !strings.Contains(r.Stdout, "keep.html") {
+		t.Errorf("expected keep.html in changed output; stdout=%q", r.Stdout)
+	}
 }

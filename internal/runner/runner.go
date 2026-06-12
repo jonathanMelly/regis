@@ -18,10 +18,13 @@ import (
 
 // Options controls runner behavior.
 type Options struct {
-	DryRun        bool
-	SkipConfirm   bool
-	NatureFilter  []string // empty = all natures
-	PruneReleases bool     // prune old releases (remote + local) after a successful deploy
+	DryRun           bool
+	SkipConfirm      bool
+	NatureFilter     []string // empty = all natures
+	PruneReleases    bool     // prune old releases (remote + local) after a successful deploy
+	DeduplicateSteps bool     // drop duplicate (ScenarioName, CueName) steps — rdiff only
+	ScenarioFilter   []string // if non-empty, keep only steps whose ScenarioName is in this set — rdiff only
+	CueFilter        []string // if non-empty, keep only steps whose Name is in this set — rdiff only
 }
 
 // Dispatch maps cue nature to executor.
@@ -72,6 +75,38 @@ func Run(ctx context.Context, cfg *config.Config, scenarioNames []string, target
 				IsLocal:         cr.Local || cr.Nature == "generate",
 			})
 		}
+	}
+
+	if opts.DeduplicateSteps {
+		seen := make(map[string]bool, len(steps))
+		deduped := make([]Step, 0, len(steps))
+		for _, s := range steps {
+			key := s.ScenarioName + "\x00" + s.Name
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			deduped = append(deduped, s)
+		}
+		steps = deduped
+	}
+
+	if len(opts.ScenarioFilter) > 0 || len(opts.CueFilter) > 0 {
+		scSet := make(map[string]bool, len(opts.ScenarioFilter))
+		for _, s := range opts.ScenarioFilter {
+			scSet[s] = true
+		}
+		cueSet := make(map[string]bool, len(opts.CueFilter))
+		for _, c := range opts.CueFilter {
+			cueSet[c] = true
+		}
+		filtered := make([]Step, 0, len(steps))
+		for _, s := range steps {
+			if scSet[s.ScenarioName] || cueSet[s.Name] {
+				filtered = append(filtered, s)
+			}
+		}
+		steps = filtered
 	}
 
 	phases := SplitPhases(steps)

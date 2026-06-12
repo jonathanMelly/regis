@@ -18,6 +18,21 @@ type mockConnSecret struct {
 
 func (m *mockConnSecret) Download(_ string) ([]byte, error) { return m.remoteData, nil }
 
+// TestSecretExecutor_noConn is a non-regression test for the rdiff nil-conn panic.
+// When the SSH dial fails, rdiff passes nil as conn; executor must return StatusFailed, not panic.
+func TestSecretExecutor_noConn(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(dir+"/.env", []byte("KEY=val\n"), 0600)
+
+	ex := cue.NewSecretExecutor(nil)
+	r, _ := ex.Execute(context.Background(), nil,
+		config.CueRef{Name: "env", Nature: "secret", Src: config.StringOrList{dir + "/.env"}, Dest: ".env"},
+		config.Target{Dir: "/opt/app"})
+	if r.Status != cue.StatusFailed {
+		t.Errorf("expected StatusFailed with nil conn, got %v", r.Status)
+	}
+}
+
 func TestSecretExecutor_local_absent_skips(t *testing.T) {
 	mock := &mockConnSecret{}
 	ex := cue.NewSecretExecutor(mock)

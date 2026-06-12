@@ -27,6 +27,13 @@ func (e *SecretExecutor) Execute(ctx context.Context, conn SSHConn, cr config.Cu
 	start := time.Now()
 	r := Result{CueName: cr.Name, Nature: "secret", AffectsRelease: true}
 
+	if e.conn == nil {
+		r.Status = StatusFailed
+		r.Err = fmt.Errorf("secret %q: no SSH connection available", cr.Name)
+		r.Elapsed = time.Since(start)
+		return r, nil
+	}
+
 	localPath := string(cr.Src[0])
 	remotePath := joinRemotePath(e.conn, target.Dir, cr.Dest)
 	preserve := []string(cr.Preserve)
@@ -44,7 +51,11 @@ func (e *SecretExecutor) Execute(ctx context.Context, conn SSHConn, cr config.Cu
 		return r, nil
 	}
 
-	remoteData, _ := e.conn.Download(remotePath) // ignore error — first deploy is fine
+	// Skip the download when we know the file doesn't exist (first deploy to empty target).
+	var remoteData []byte
+	if !RemoteFilesKnown(ctx) || RemoteFileExists(ctx, remotePath) {
+		remoteData, _ = e.conn.Download(remotePath)
+	}
 
 	diff, merged := MergeSecrets(string(localData), string(remoteData), preserve)
 

@@ -27,9 +27,12 @@ type RollbackOutcome struct {
 //
 // Steps:
 //  1. Locate the most recent local release snapshot (previous, not current).
-//  2. Per-cue compensations in reverse execution order for cues where rollback: is enabled:
+//  2. Per-cue compensations in reverse execution order for cues where rollback: is enabled
+//     (rollback: defer cues are skipped here):
 //     - File natures (binary/config/secret/render/pack): re-upload from previous snapshot's CueArtifacts.
 //     - Action natures: run the rollback.shell command.
+//  2b. Deferred cues (rollback: defer): re-execute cue shell in original forward order,
+//     after all file restores from step 2 complete.
 //  3. If no cues had rollback: enabled (legacy/explicit on_error: rollback): fall back to
 //     re-uploading all artifacts from the previous snapshot.
 //  4. Run scenario-level rollback: action cues from each scenario in topo order.
@@ -81,8 +84,21 @@ func executeRollback(
 	}
 
 	perCueRollback := len(cuePairs) > 0
-	for i := len(cuePairs) - 1; i >= 0; i-- {
-		cr := cuePairs[i].step.CueRef
+
+	// Partition: regular compensations (reverse order) vs deferred re-runs (forward, after restores).
+	var regularPairs []cuePair
+	var deferredPairs []cuePair
+	for _, p := range cuePairs {
+		if p.step.CueRef.Rollback.Defer {
+			deferredPairs = append(deferredPairs, p)
+		} else {
+			regularPairs = append(regularPairs, p)
+		}
+	}
+
+	// Step 2: regular compensations in reverse execution order.
+	for i := len(regularPairs) - 1; i >= 0; i-- {
+		cr := regularPairs[i].step.CueRef
 		switch cr.Nature {
 		case "binary", "config", "secret", "render", "pack":
 			// File restore: re-upload previous snapshot files for this specific cue.
@@ -109,6 +125,25 @@ func executeRollback(
 					return out
 				}
 			}
+		}
+	}
+
+	// Step 2b: deferred cues re-run in original forward order, after file restores.
+	for _, p := range deferredPairs {
+		cr := p.step.CueRef
+		if cr.Shell == "" {
+			continue
+		}
+		sudo := cr.Sudo || target.Sudo
+		var runErr error
+		if sudo {
+			_, _, _, runErr = conn.RunSudo(cr.Shell)
+		} else {
+			_, _, _, runErr = conn.Run(cr.Shell)
+		}
+		if runErr != nil {
+			out.Err = fmt.Errorf("rollback: deferred %q: %w", cr.Name, runErr)
+			return out
 		}
 	}
 

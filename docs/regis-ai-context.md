@@ -25,6 +25,7 @@
 | `dir` | string | — | Remote working directory; relative dest paths anchor here |
 | `sudo` | bool | `false` | Global sudo default for this target; overridable per cue |
 | `dotenv` | string | — | Explicit env file path; overrides auto-discovery of .env.<name> |
+| `password` | string | — | SSH password (fallback when public-key auth fails); accepts ${VAR} — use password: ${APP_PASSWORD} and inject via .env or shell env |
 
 The first target is used by default. `--target <name>` selects by name.
 
@@ -51,9 +52,10 @@ The first target is used by default. `--target <name>` selects by name.
 | field | required | description |
 |-------|----------|-------------|
 | `name` | yes | Unique within the scenario |
-| `nature` | yes | binary | config | secret | action | generate | render | pack | service — inferred when manager: is set |
+| `nature` | yes | binary | config | secret | action | generate | render | pack | service — inferred when manager: is set (→ service) or git: true (→ pack) |
 | `local` | no | true = run on local machine (action only); default = run on SSH target |
 | `src` | no | Local source path — binary/secret: single file only; config: scalar path, glob string, or YAML list |
+| `git` | no | Use git-tracked files from HEAD commit as the pack source (git ls-tree -r HEAD) — mutually exclusive with src:; .regisignore still applied; nature: pack inferred (pack only) |
 | `dest` | no | Remote destination; folder (trailing /) when src is glob or list |
 | `shell` | no | Shell command to execute (canonical field; cmd: is an alias) |
 | `env` | no | Environment variables for local execution (key: value map) |
@@ -75,7 +77,7 @@ The first target is used by default. `--target <name>` selects by name.
 | `service_file` | no | Local path to systemd unit file; uploaded to /etc/systemd/system/<name>.service when changed |
 | `health` | no | Health-check command (crontab watchdog) |
 | `commands` | no | Override or extend manager commands (start, stop, restart, reload, deploy, status). Template vars: {name}, {binary}, {dir}, {service_file}. Action refs: {restart}, {reload}, etc. expand to the pre-override base command |
-| `rollback` | no | Per-cue compensation on rollback — rollback: true restores previous file state for file natures; rollback: "cmd" or {shell, sudo} runs a command for action natures; infers on_error: rollback for the scenario |
+| `rollback` | no | Per-cue compensation on rollback — rollback: true restores previous file state for file natures; rollback: "cmd" or {shell, sudo} runs a command for action natures; rollback: defer re-executes the cue shell after all per-cue file restores complete; infers on_error: rollback for the scenario |
 
 **Composite cue reference fields** (used instead of `name`/`nature`):
 
@@ -161,6 +163,12 @@ When `on_error: rollback` triggers (explicit or inferred from per-cue `rollback:
   rollback:
     shell: systemctl stop myapp
     sudo: true
+
+# rollback: defer — re-run this cue's shell AFTER all per-cue file restores complete.
+# Use when the command must reconcile with restored files (e.g. dependency install).
+- name: install-deps
+  shell: composer install
+  rollback: defer         # skipped in reverse phase; re-run after vendor/ is restored
 ```
 
 `$RELEASE_ID` is injected into the env of every cue and every rollback action at deploy start, so pre-deploy backup labels and rollback restore labels match:
@@ -237,10 +245,15 @@ rollback: not applicable — generate cues run locally and produce no remote sta
 
 Ships a local file tree to a remote directory.
 src: is an allowlist of glob patterns; .regisignore in the working directory is the denylist.
-Each matched file is compared with its remote counterpart (MD5 by default; text diff with diff: text).
+git: true uses the current HEAD commit's file tree (git ls-tree -r HEAD) as the source
+instead of src: glob patterns. .regisignore is still applied as a denylist. Requires the
+working directory to be inside a git repository with at least one commit. src: and git: true
+are mutually exclusive; nature: pack is inferred when git: true is set without nature:.
+Each matched file is compared with its remote counterpart (MD5 by default; text diff with diff_mode: text).
 Only changed files are uploaded. prune: true removes remote files absent from the local set.
 Paths are preserved relative to each glob root:
 src: application/**  dest: /var/www/  →  application/img/logo.png  →  /var/www/img/logo.png
+git: true            dest: /var/www/  →  cmd/main.go               →  /var/www/cmd/main.go
 Direction: local → remote. Always release-affecting.
 Prune strategy (three tiers, first match wins):
 Tier 1  — managed-file manifest (.regis-pack-<name> in dest or release archive): exact diff, automatic

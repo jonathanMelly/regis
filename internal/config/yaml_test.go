@@ -319,6 +319,32 @@ rollback: "rm -f maintenance.flag"
 	}
 }
 
+func TestCueRollback_defer(t *testing.T) {
+	var got config.CueRollback
+	if err := yaml.Unmarshal([]byte(`defer`), &got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Enabled || !got.Defer || got.Shell != "" || got.Sudo {
+		t.Errorf("rollback: defer — unexpected: %+v", got)
+	}
+}
+
+func TestCueRef_rollbackDeferParsedFromYAML(t *testing.T) {
+	const src = `
+name: install-deps
+nature: action
+shell: composer install
+rollback: defer
+`
+	var got config.CueRef
+	if err := yaml.Unmarshal([]byte(src), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Rollback == nil || !got.Rollback.Enabled || !got.Rollback.Defer {
+		t.Errorf("CueRef.Rollback (defer form) not parsed: %+v", got.Rollback)
+	}
+}
+
 func TestCueRef_rollbackTrueForFileNature(t *testing.T) {
 	const src = `
 name: frontend

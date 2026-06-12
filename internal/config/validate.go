@@ -53,6 +53,13 @@ func Validate(c *Config) []error {
 			if cr.ScenarioRef != "" {
 				continue // references validated when resolved at runtime
 			}
+			// Infer cue name from scenario name when the scenario has exactly one
+			// inline cue with no explicit name — single-cue scenarios are common enough
+			// that the scenario name is the natural cue identifier.
+			if cr.Name == "" && len(sc.Cues) == 1 {
+				cr.Name = scName
+				updated.Cues[i].Name = scName
+			}
 			if cr.Name == "" {
 				add("scenario %q: cue at index %d missing 'name'", scName, i)
 				continue
@@ -63,6 +70,19 @@ func Validate(c *Config) []error {
 				continue
 			}
 			updated.Cues[i].Nature = nature
+
+			if cr.Git {
+				if len(cr.Src) > 0 {
+					add("scenario %q cue %q: git: true and src: are mutually exclusive", scName, cr.Name)
+				}
+				if nature != "pack" {
+					add("scenario %q cue %q: git: true requires nature: pack", scName, cr.Name)
+				}
+			}
+
+			if cr.Rollback != nil && cr.Rollback.Defer && cr.Shell == "" {
+				add("scenario %q cue %q: rollback: defer requires a shell: command to re-run", scName, cr.Name)
+			}
 		}
 		c.Scenarios[scName] = updated
 	}
@@ -82,6 +102,8 @@ func inferNature(c CueRef) (string, error) {
 	hasPreserve := len(c.Preserve) > 0
 
 	switch {
+	case c.Git && !hasShell:
+		return "pack", nil
 	case hasShell && !hasSrc && hasDest:
 		return "render", nil
 	case hasShell && !hasSrc:

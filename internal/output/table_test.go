@@ -290,6 +290,47 @@ func TestCueDetailLines_errorShown(t *testing.T) {
 	}
 }
 
+func TestCueDetailLines_warningsAlwaysShown(t *testing.T) {
+	// Warnings must appear for ALL statuses, even equal and without verbose.
+	for _, status := range []cue.Status{cue.StatusEqual, cue.StatusChanged, cue.StatusFailed} {
+		r := cue.Result{
+			CueName:  "app",
+			Nature:   "pack",
+			Status:   status,
+			Warnings: []string{"2 staged file(s) not committed — will NOT be deployed: foo.go, bar.go"},
+		}
+		lines := output.CueDetailLines(r, false, false, nil)
+		var found bool
+		for _, l := range lines {
+			if strings.Contains(l, "⚠") && strings.Contains(l, "staged") {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("status=%v: expected warning with ⚠ in detail lines, got %v", status, lines)
+		}
+	}
+}
+
+func TestCueDetailLines_equalWithStdout_shown(t *testing.T) {
+	r := cue.Result{
+		CueName: "app",
+		Nature:  "pack",
+		Status:  cue.StatusEqual,
+		Stdout:  "commit abc1234",
+	}
+	lines := output.CueDetailLines(r, false, false, nil)
+	var found bool
+	for _, l := range lines {
+		if strings.Contains(l, "abc1234") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("StatusEqual stdout must appear in detail lines, got %v", lines)
+	}
+}
+
 func TestCueDetailLines_diffShownWhenRequested(t *testing.T) {
 	r := cue.Result{
 		CueName: "cfg",

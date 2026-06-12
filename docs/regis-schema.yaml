@@ -9,6 +9,7 @@ targets:
     dir: ""                                   # Remote working directory; relative dest paths anchor here
     sudo: false                               # Global sudo default for this target; overridable per cue
     dotenv: ""                                # Explicit env file path; overrides auto-discovery of .env.<name>
+    password: ""                              # SSH password (fallback when public-key auth fails); accepts ${VAR} — use password: ${APP_PASSWORD} and inject via .env or shell env
 
 defaults:
   env:                                        # Base env for all local cues; overridden by Scenario.Env and cue-level env
@@ -25,10 +26,11 @@ scenarios:
     on_error: rollback                        # rollback|halt|continue — Override for run.on_error
     cues:
       - name: ""                              # mandatory — Unique within the scenario
-        nature: binary                        # mandatory — binary|config|secret|action|generate|render|pack|service — inferred when manager: is set
+        nature: binary                        # mandatory — binary|config|secret|action|generate|render|pack|service — inferred when manager: is set (→ service) or git: true (→ pack)
         local: false                          # true = run on local machine (action only); default = run on SSH target
-        # ── file upload: binary/secret = single file · config = multi-file/glob/tree · pack = glob tree with prune ──
+        # ── file upload: binary/secret = single file · config = multi-file/glob/tree · pack = glob tree with prune · or use git: true instead of src for pack ──
         src: []                               # Local source path — binary/secret: single file only; config: scalar path, glob string, or YAML list
+        git: false                            # Use git-tracked files from HEAD commit as the pack source (git ls-tree -r HEAD) — mutually exclusive with src:; .regisignore still applied; nature: pack inferred (pack only)
         dest: ""                              # Remote destination; folder (trailing /) when src is glob or list
         # ── action / generate ──
         shell: ""                             # Shell command to execute (canonical field; cmd: is an alias)
@@ -55,8 +57,8 @@ scenarios:
         service_file: ""                      # Local path to systemd unit file; uploaded to /etc/systemd/system/<name>.service when changed
         health: ""                            # Health-check command (crontab watchdog)
         commands: {}                          # Override or extend manager commands (start, stop, restart, reload, deploy, status). Template vars: {name}, {binary}, {dir}, {service_file}. Action refs: {restart}, {reload}, etc. expand to the pre-override base command
-        # ── per-cue rollback (infers on_error: rollback; true/"cmd"/{shell,sudo}) ──
-        rollback: ""                          # Per-cue compensation on rollback — rollback: true restores previous file state for file natures; rollback: "cmd" or {shell, sudo} runs a command for action natures; infers on_error: rollback for the scenario
+        # ── per-cue rollback (infers on_error: rollback; true/"cmd"/{shell,sudo}/defer) ──
+        rollback: ""                          # Per-cue compensation on rollback — rollback: true restores previous file state for file natures; rollback: "cmd" or {shell, sudo} runs a command for action natures; rollback: defer re-executes the cue shell after all per-cue file restores complete; infers on_error: rollback for the scenario
     checks:                  # terminal acceptance probes; run after cues complete
       - name: <string>       # required
         nature: action       # checks are read-only action cues

@@ -4,6 +4,7 @@ package score_test
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"git.disroot.org/jmy/regis/internal/config"
 	"git.disroot.org/jmy/regis/internal/score"
@@ -174,6 +175,7 @@ func TestRenderDAG_legendSymbols(t *testing.T) {
 				{Name: "c", Nature: "config"},
 				{Name: "s", Nature: "secret"},
 				{Name: "r", Nature: "render"},
+				{Name: "p", Nature: "pack"},
 				{Name: "g", Nature: "generate"},
 				{Name: "a", Nature: "action"},
 				{Name: "svc", Nature: "service", Manager: "systemd"},
@@ -182,10 +184,86 @@ func TestRenderDAG_legendSymbols(t *testing.T) {
 		ScenarioNames: []string{"all"},
 	}
 	out := score.RenderDAG(cfg)
-	for _, sym := range []string{"!", "#", "§", "~", "+", "@", "&"} {
+	for _, sym := range []string{"!", "#", "§", "~", "%", "+", "@", "&"} {
 		if !strings.Contains(out, sym) {
 			t.Errorf("legend missing symbol %q for its nature; output:\n%s", sym, out)
 		}
+	}
+}
+
+func TestRenderTree_cueYAMLOrder(t *testing.T) {
+	// Cues must appear in YAML declaration order, not grouped by nature.
+	cfg := &config.Config{
+		Scenarios: map[string]config.Scenario{
+			"deploy": {Cues: []config.CueRef{
+				{Name: "first", Nature: "action"},
+				{Name: "second", Nature: "binary"},
+				{Name: "third", Nature: "action"},
+			}},
+		},
+		ScenarioNames: []string{"deploy"},
+	}
+	out := score.RenderTree(cfg, nil, "yaml")
+	firstPos := strings.Index(out, "first")
+	secondPos := strings.Index(out, "second")
+	thirdPos := strings.Index(out, "third")
+	if firstPos < 0 || secondPos < 0 || thirdPos < 0 {
+		t.Fatalf("missing cues in output:\n%s", out)
+	}
+	if !(firstPos < secondPos && secondPos < thirdPos) {
+		t.Errorf("cues not in YAML declaration order; positions: first=%d second=%d third=%d\n%s",
+			firstPos, secondPos, thirdPos, out)
+	}
+}
+
+func TestRenderTree_expandsScenarioRef(t *testing.T) {
+	cfg := makeTestConfig()
+	// "Full" has one cue: * saver — with default maxDepth it should expand saver's cues inline.
+	out := score.RenderTree(cfg, []string{"Full"}, "yaml")
+	// saver's requires (** build) and its cues (& saver, ! bin) must appear indented under Full.
+	if !strings.Contains(out, "** build") {
+		t.Error("saver's requires must appear in expanded sub-tree")
+	}
+	if !strings.Contains(out, "& saver") {
+		t.Error("saver's service cue must appear in expanded sub-tree")
+	}
+	if !strings.Contains(out, "! bin") {
+		t.Error("saver's binary cue must appear in expanded sub-tree")
+	}
+}
+
+func TestRenderTree_maxDepthZeroNoExpansion(t *testing.T) {
+	cfg := makeTestConfig()
+	// With maxDepth=0 the * ref should appear as a flat label, no sub-tree.
+	out := score.RenderTree(cfg, []string{"Full"}, "yaml", 0)
+	// Should still show the ref label
+	if !strings.Contains(out, "* saver") {
+		t.Error("ref label must still appear when maxDepth=0")
+	}
+	// Must NOT show the │ continuation character (no expansion)
+	if strings.Contains(out, "│") {
+		t.Error("no expansion expected when maxDepth=0")
+	}
+}
+
+func TestRenderTree_cycleProtection(t *testing.T) {
+	// A refs B, B refs A — must not loop.
+	cfg := &config.Config{
+		Scenarios: map[string]config.Scenario{
+			"a": {Cues: []config.CueRef{{ScenarioRef: "b"}}},
+			"b": {Cues: []config.CueRef{{ScenarioRef: "a"}}},
+		},
+		ScenarioNames: []string{"a", "b"},
+	}
+	done := make(chan string, 1)
+	go func() { done <- score.RenderTree(cfg, []string{"a"}, "yaml") }()
+	select {
+	case out := <-done:
+		if !strings.Contains(out, "a") {
+			t.Error("output must at least contain scenario 'a'")
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("RenderTree with circular scenario refs did not terminate in 2s")
 	}
 }
 

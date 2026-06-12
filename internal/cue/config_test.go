@@ -21,6 +21,21 @@ func (m *mockConnWithDownload) Download(path string) ([]byte, error) {
 	return []byte(m.remoteContent), nil
 }
 
+// TestConfigExecutor_noConn is a non-regression test for the rdiff nil-conn panic.
+// When the SSH dial fails, rdiff passes nil as conn; executor must return StatusFailed, not panic.
+func TestConfigExecutor_noConn(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(dir+"/nginx.conf", []byte("server {}"), 0644)
+
+	ex := cue.NewConfigExecutor(nil)
+	r, _ := ex.Execute(context.Background(), nil,
+		config.CueRef{Name: "nginx", Nature: "config", Src: config.StringOrList{dir + "/nginx.conf"}, Dest: "/etc/nginx/nginx.conf"},
+		config.Target{Dir: "/opt"})
+	if r.Status != cue.StatusFailed {
+		t.Errorf("expected StatusFailed with nil conn, got %v", r.Status)
+	}
+}
+
 func TestConfigExecutor_changed(t *testing.T) {
 	dir := t.TempDir()
 	localPath := dir + "/gateway.conf"

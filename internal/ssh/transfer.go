@@ -17,7 +17,23 @@ import (
 // UploadBytes writes data to remotePath using SFTP + atomic mv.
 // Writes to remotePath+".new" first, then renames (with optional sudo).
 func (c *Conn) UploadBytes(data []byte, remotePath string, mode fs.FileMode, useSudo bool) error {
+	// Expand ~ up front — shellQuote wraps paths in single quotes which suppresses
+	// shell ~ expansion, so both SFTP and shell commands need the literal home path.
+	var err error
+	remotePath, err = c.ExpandHome(remotePath)
+	if err != nil {
+		return err
+	}
 	tmpPath := remotePath + ".new"
+
+	// Ensure parent directory exists (first deploy to a new path).
+	if idx := strings.LastIndex(remotePath, "/"); idx > 0 {
+		mkdirCmd := "mkdir -p " + shellQuote(remotePath[:idx])
+		if useSudo {
+			mkdirCmd = "sudo " + mkdirCmd
+		}
+		c.Run(mkdirCmd) // best-effort; sc.Create surfaces the real error if this also fails
+	}
 
 	// Write via SFTP (transplanted from jelastic-gateway)
 	sc, err := sftp.NewClient(c.client)
@@ -35,7 +51,6 @@ func (c *Conn) UploadBytes(data []byte, remotePath string, mode fs.FileMode, use
 		return fmt.Errorf("sftp write %s: %w", tmpPath, err)
 	}
 	f.Close()
-	// sc.Close() removed — defer handles this
 
 	// Set permissions
 	if _, stderr, code, err := c.Run(fmt.Sprintf("chmod %o %s", mode, shellQuote(tmpPath))); err != nil || code != 0 {
@@ -71,6 +86,11 @@ func (c *Conn) Upload(localPath, remotePath string, mode fs.FileMode, useSudo bo
 
 // Download reads a remote file and returns its bytes via SFTP.
 func (c *Conn) Download(remotePath string) ([]byte, error) {
+	var err error
+	remotePath, err = c.ExpandHome(remotePath)
+	if err != nil {
+		return nil, err
+	}
 	sc, err := sftp.NewClient(c.client)
 	if err != nil {
 		return nil, fmt.Errorf("sftp client: %w", err)
@@ -86,6 +106,11 @@ func (c *Conn) Download(remotePath string) ([]byte, error) {
 
 // MD5 returns the hex MD5 of a remote file using md5sum (Linux) or md5 -q (macOS).
 func (c *Conn) MD5(remotePath string) (string, error) {
+	var err error
+	remotePath, err = c.ExpandHome(remotePath)
+	if err != nil {
+		return "", err
+	}
 	stdout, _, code, err := c.Run("md5sum " + shellQuote(remotePath))
 	if err != nil || code != 0 {
 		var stderr string
@@ -119,6 +144,11 @@ func LocalMD5(path string) (string, error) {
 // Tries Linux stat -c '%Y' first, falls back to macOS stat -f '%m'.
 // Returns zero time on any error (graceful: Windows targets, stat unavailable).
 func (c *Conn) Stat(remotePath string) (time.Time, error) {
+	var err error
+	remotePath, err = c.ExpandHome(remotePath)
+	if err != nil {
+		return time.Time{}, err
+	}
 	stdout, _, code, err := c.Run("stat -c '%Y' " + shellQuote(remotePath))
 	if err != nil || code != 0 {
 		stdout, _, code, err = c.Run("stat -f '%m' " + shellQuote(remotePath))
@@ -135,6 +165,11 @@ func (c *Conn) Stat(remotePath string) (time.Time, error) {
 
 // Exists reports whether remotePath exists on the target.
 func (c *Conn) Exists(remotePath string) (bool, error) {
+	var err error
+	remotePath, err = c.ExpandHome(remotePath)
+	if err != nil {
+		return false, err
+	}
 	_, _, code, err := c.Run("test -e " + shellQuote(remotePath))
 	if err != nil {
 		return false, err

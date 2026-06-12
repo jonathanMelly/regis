@@ -281,3 +281,121 @@ func (c *callTrackExec) Execute(_ context.Context, _ cue.SSHConn, cr config.CueR
 	*c.called = true
 	return cue.Result{CueName: cr.Name, Nature: c.nature, Status: c.status}, nil
 }
+
+// dedupCfg builds a config where scenario references create duplicate steps.
+//   base:  c1 (config), c2 (config)
+//   combo: { scenario: base }, c3 (config), act1 (action)
+//
+// Running ["base", "combo"] without dedup produces 5 steps: c1×2, c2×2, c3, act1.
+// With DeduplicateSteps the duplicate (base, c1) and (base, c2) are dropped → 4 steps.
+func dedupCfg() (*config.Config, runner.Dispatch) {
+	cfg := &config.Config{
+		Targets: []config.Target{{Name: "t", Host: "h", User: "u", Dir: "/d"}},
+		Scenarios: map[string]config.Scenario{
+			"base": {Cues: []config.CueRef{
+				{Name: "c1", Nature: "config"},
+				{Name: "c2", Nature: "config"},
+			}},
+			"combo": {Cues: []config.CueRef{
+				{ScenarioRef: "base"},
+				{Name: "c3", Nature: "config"},
+				{Name: "act1", Nature: "action"},
+			}},
+		},
+		ScenarioNames: []string{"base", "combo"},
+	}
+	dispatch := runner.Dispatch{
+		Config: &mockExec{"config", cue.StatusEqual},
+		Action: &mockExec{"action", cue.StatusEqual},
+	}
+	return cfg, dispatch
+}
+
+func runDedupCfg(t *testing.T, opts runner.Options) []string {
+	t.Helper()
+	cfg, dispatch := dedupCfg()
+	var seen []string
+	_, err := runner.Run(context.Background(), cfg, cfg.ScenarioNames, cfg.Targets[0],
+		opts, dispatch, func(r cue.Result) { seen = append(seen, r.CueName) })
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	return seen
+}
+
+func TestRun_deduplicateSteps_removesExpansionDuplicates(t *testing.T) {
+	// Without dedup: c1, c2 (from base) + c1, c2, c3, act1 (from combo) = 6 steps.
+	without := runDedupCfg(t, runner.Options{DryRun: true})
+	if len(without) != 6 {
+		t.Fatalf("without dedup: want 6 steps, got %d: %v", len(without), without)
+	}
+
+	// With dedup: c1, c2 (first seen in base) + c3, act1 (combo-only) = 4 steps.
+	with := runDedupCfg(t, runner.Options{DryRun: true, DeduplicateSteps: true})
+	want := []string{"c1", "c2", "c3", "act1"}
+	if len(with) != len(want) {
+		t.Fatalf("with dedup: want %v, got %v", want, with)
+	}
+	for i, name := range want {
+		if with[i] != name {
+			t.Errorf("position %d: want %q, got %q", i, name, with[i])
+		}
+	}
+}
+
+func TestRun_scenarioFilter_keepsOnlyMatchingScenario(t *testing.T) {
+	// ScenarioFilter: ["base"] — keep only steps whose ScenarioName is "base".
+	// After dedup the steps are: (base,c1), (base,c2), (combo,c3), (combo,act1).
+	// Filter retains the two base steps.
+	seen := runDedupCfg(t, runner.Options{
+		DryRun:           true,
+		DeduplicateSteps: true,
+		ScenarioFilter:   []string{"base"},
+	})
+	want := []string{"c1", "c2"}
+	if len(seen) != len(want) {
+		t.Fatalf("want %v, got %v", want, seen)
+	}
+	for i, name := range want {
+		if seen[i] != name {
+			t.Errorf("position %d: want %q, got %q", i, name, seen[i])
+		}
+	}
+}
+
+func TestRun_cueFilter_keepsOnlyMatchingCueName(t *testing.T) {
+	// CueFilter: ["c3", "act1"] — keep only steps whose Name is c3 or act1.
+	seen := runDedupCfg(t, runner.Options{
+		DryRun:           true,
+		DeduplicateSteps: true,
+		CueFilter:        []string{"c3", "act1"},
+	})
+	want := []string{"c3", "act1"}
+	if len(seen) != len(want) {
+		t.Fatalf("want %v, got %v", want, seen)
+	}
+	for i, name := range want {
+		if seen[i] != name {
+			t.Errorf("position %d: want %q, got %q", i, name, seen[i])
+		}
+	}
+}
+
+func TestRun_mixedFilter_scenarioORcueName(t *testing.T) {
+	// ScenarioFilter: ["base"] + CueFilter: ["act1"] — union: base's steps + act1.
+	seen := runDedupCfg(t, runner.Options{
+		DryRun:           true,
+		DeduplicateSteps: true,
+		ScenarioFilter:   []string{"base"},
+		CueFilter:        []string{"act1"},
+	})
+	want := []string{"c1", "c2", "act1"}
+	if len(seen) != len(want) {
+		t.Fatalf("want %v, got %v", want, seen)
+	}
+	for i, name := range want {
+		if seen[i] != name {
+			t.Errorf("position %d: want %q, got %q", i, name, seen[i])
+		}
+	}
+}

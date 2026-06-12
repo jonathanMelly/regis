@@ -99,6 +99,7 @@ func InterpolateForTarget(c *Config, t *Target) error {
 			c.Targets[i].User = fn(tgt.User)
 			c.Targets[i].Port = fn(tgt.Port)
 			c.Targets[i].Dir = fn(tgt.Dir)
+			c.Targets[i].Password = fn(tgt.Password)
 		}
 		for name, sc := range c.Scenarios {
 			for i, cr := range sc.Cues {
@@ -142,6 +143,7 @@ func InterpolateForTarget(c *Config, t *Target) error {
 			c.Targets[i].User = fn(tgt.User)
 			c.Targets[i].Port = fn(tgt.Port)
 			c.Targets[i].Dir = fn(tgt.Dir)
+			c.Targets[i].Password = fn(tgt.Password)
 		}
 	}
 	for name, sc := range c.Scenarios {

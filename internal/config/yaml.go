@@ -214,6 +214,9 @@ func (r *CueRollback) UnmarshalYAML(value *yaml.Node) error {
 			r.Enabled = true
 		case "false":
 			// explicit false: disabled
+		case "defer":
+			r.Enabled = true
+			r.Defer = true
 		default:
 			r.Enabled = true
 			r.Shell = value.Value
@@ -243,6 +246,7 @@ func (c *CueRef) UnmarshalYAML(value *yaml.Node) error {
 		Nature          string            `yaml:"nature"`
 		Local           bool              `yaml:"local"`
 		Src             StringOrList      `yaml:"src"`
+		Git             bool              `yaml:"git"`
 		Dest            string            `yaml:"dest"`
 		Shell           string            `yaml:"shell"`
 		Cmd             string            `yaml:"cmd"`
@@ -280,6 +284,7 @@ func (c *CueRef) UnmarshalYAML(value *yaml.Node) error {
 	c.Nature = p.Nature
 	c.Local = p.Local
 	c.Src = p.Src
+	c.Git = p.Git
 	c.Dest = p.Dest
 	c.Shell = p.Shell
 	if p.Cmd != "" {

@@ -29,3 +29,16 @@ func DestRelativeToTarget(dest string) (string, bool) { return destRelativeToTar
 func PackScopeFilter(candidates []PackCandidate, srcs config.StringOrList) []PackCandidate {
 	return packScopeFilter(candidates, srcs)
 }
+
+// ExpandSrcFromGit wraps expandSrcFromGit, returning only the file paths for test assertions.
+func ExpandSrcFromGit() ([]string, error) {
+	rs, err := expandSrcFromGit()
+	if err != nil {
+		return nil, err
+	}
+	paths := make([]string, len(rs))
+	for i, r := range rs {
+		paths[i] = r.path
+	}
+	return paths, nil
+}

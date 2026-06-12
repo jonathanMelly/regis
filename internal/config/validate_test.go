@@ -2,7 +2,9 @@
 package config_test
 
 import (
+	"strings"
 	"testing"
+
 	"git.disroot.org/jmy/regis/internal/config"
 )
 
@@ -71,13 +73,32 @@ func TestValidate_srcWithoutNature_error(t *testing.T) {
 	}
 }
 
-func TestValidate_cueName_required(t *testing.T) {
+func TestValidate_cueName_inferredFromScenario(t *testing.T) {
+	// Single-cue scenario with no explicit name: infer name from scenario key.
 	c := minimalCfg()
-	c.Scenarios["s"] = config.Scenario{
+	c.Scenarios["my-cue"] = config.Scenario{
 		Cues: []config.CueRef{{Nature: "action", Shell: "echo hi"}},
 	}
+	errs := config.Validate(c)
+	if len(errs) != 0 {
+		t.Errorf("expected no errors for single-cue inferred name, got: %v", errs)
+	}
+	if got := c.Scenarios["my-cue"].Cues[0].Name; got != "my-cue" {
+		t.Errorf("inferred name = %q, want %q", got, "my-cue")
+	}
+}
+
+func TestValidate_cueName_requiredForMultiCue(t *testing.T) {
+	// Multi-cue scenario: unnamed cue must still error.
+	c := minimalCfg()
+	c.Scenarios["s"] = config.Scenario{
+		Cues: []config.CueRef{
+			{Name: "first", Nature: "action", Shell: "echo a"},
+			{Nature: "action", Shell: "echo b"},
+		},
+	}
 	if errs := config.Validate(c); len(errs) == 0 {
-		t.Error("expected error: cue name required")
+		t.Error("expected error: unnamed cue in multi-cue scenario")
 	}
 }
 
@@ -102,6 +123,47 @@ func TestValidate_unknownNature_rejected(t *testing.T) {
 	}
 	if errs := config.Validate(c); len(errs) == 0 {
 		t.Error("expected error for unknown nature")
+	}
+}
+
+func TestValidate_gitTrue_infersPack(t *testing.T) {
+	c := minimalCfg()
+	c.Scenarios["s"] = config.Scenario{
+		Cues: []config.CueRef{{Name: "app", Git: true, Dest: "/var/www/"}},
+	}
+	if errs := config.Validate(c); len(errs) != 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	if got := c.Scenarios["s"].Cues[0].Nature; got != "pack" {
+		t.Errorf("want nature=pack inferred from git: true, got %q", got)
+	}
+}
+
+func TestValidate_gitTrue_withSrc_error(t *testing.T) {
+	c := minimalCfg()
+	c.Scenarios["s"] = config.Scenario{
+		Cues: []config.CueRef{{Name: "app", Git: true, Src: config.StringOrList{"dist/**"}, Dest: "/var/www/"}},
+	}
+	errs := config.Validate(c)
+	if len(errs) == 0 {
+		t.Fatal("expected error for git: true combined with src:")
+	}
+	if !strings.Contains(errs[0].Error(), "mutually exclusive") {
+		t.Errorf("expected 'mutually exclusive' in error, got %q", errs[0])
+	}
+}
+
+func TestValidate_gitTrue_wrongNature_error(t *testing.T) {
+	c := minimalCfg()
+	c.Scenarios["s"] = config.Scenario{
+		Cues: []config.CueRef{{Name: "app", Nature: "config", Git: true, Dest: "/var/www/"}},
+	}
+	errs := config.Validate(c)
+	if len(errs) == 0 {
+		t.Fatal("expected error for git: true with nature: config")
+	}
+	if !strings.Contains(errs[0].Error(), "nature: pack") {
+		t.Errorf("expected 'nature: pack' in error, got %q", errs[0])
 	}
 }
 

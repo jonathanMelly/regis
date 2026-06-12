@@ -83,6 +83,22 @@ func TestBinaryExecutor_unchanged(t *testing.T) {
 	}
 }
 
+// TestBinaryExecutor_noConn is a non-regression test for the rdiff nil-conn panic.
+// When the SSH dial fails, rdiff passes nil as conn; executor must return StatusFailed, not panic.
+func TestBinaryExecutor_noConn(t *testing.T) {
+	dir := t.TempDir()
+	localPath := dir + "/app"
+	os.WriteFile(localPath, []byte("binary"), 0755)
+
+	ex := cue.NewBinaryExecutor(nil)
+	r, _ := ex.Execute(context.Background(), nil,
+		config.CueRef{Name: "app", Nature: "binary", Src: config.StringOrList{localPath}, Dest: "app"},
+		config.Target{Dir: "/opt/app"})
+	if r.Status != cue.StatusFailed {
+		t.Errorf("expected StatusFailed with nil conn, got %v", r.Status)
+	}
+}
+
 func TestBinaryExecutor_changed(t *testing.T) {
 	dir := t.TempDir()
 	localPath := dir + "/saver"

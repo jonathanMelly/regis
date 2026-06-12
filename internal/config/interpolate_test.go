@@ -305,6 +305,50 @@ scenarios: {}
 	}
 }
 
+// TestLoad_thenInterpolateForTarget_expandsTargetDotenv: regression for the bug where
+// config.Load (nil-target path) left ${VAR} unexpanded when the var lived only in
+// .env.<target-name>.  The fix — calling InterpolateForTarget after target selection —
+// must resolve host/user/dir before Dial.
+func TestLoad_thenInterpolateForTarget_expandsTargetDotenv(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "regis.yml", `
+targets:
+  - name: prod
+    host: ${APP_HOST}
+    user: ${APP_USER}
+    dir: ${APP_DIR}
+scenarios: {}
+`)
+	// Only a per-target dotenv — no .env.local — mirrors the real-world setup
+	// where SSH creds live in .env.<name> and are gitignored.
+	writeFile(t, dir, ".env.prod", "APP_HOST=prod.example.com\nAPP_USER=deploy\nAPP_DIR=/var/www/app\n")
+
+	cfg, err := config.Load(filepath.Join(dir, "regis.yml"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	// After Load (nil-target path), vars from .env.prod are still unexpanded.
+	if cfg.Targets[0].Host != "${APP_HOST}" {
+		t.Fatalf("precondition: Load should leave per-target vars unexpanded; got %q", cfg.Targets[0].Host)
+	}
+
+	// Simulate what rdiff/run/withConn now do: interpolate for the selected target.
+	if err := config.InterpolateForTarget(cfg, &cfg.Targets[0]); err != nil {
+		t.Fatalf("InterpolateForTarget: %v", err)
+	}
+	tgt := cfg.Targets[0]
+	if tgt.Host != "prod.example.com" {
+		t.Errorf("host: want prod.example.com, got %q", tgt.Host)
+	}
+	if tgt.User != "deploy" {
+		t.Errorf("user: want deploy, got %q", tgt.User)
+	}
+	if tgt.Dir != "/var/www/app" {
+		t.Errorf("dir: want /var/www/app, got %q", tgt.Dir)
+	}
+}
+
 // TestInterpolateForTarget_NilTarget: nil target -> .env.local only, applies to all targets
 // (backward compat).
 func TestInterpolateForTarget_NilTarget(t *testing.T) {

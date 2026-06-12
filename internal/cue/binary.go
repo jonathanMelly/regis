@@ -59,6 +59,13 @@ func (e *BinaryExecutor) Execute(ctx context.Context, conn SSHConn, cr config.Cu
 		AffectsRelease: true,
 	}
 
+	if e.conn == nil {
+		r.Status = StatusFailed
+		r.Err = fmt.Errorf("binary %q: no SSH connection available", cr.Name)
+		r.Elapsed = time.Since(start)
+		return r, nil
+	}
+
 	localPath := string(cr.Src[0])
 	remotePath := joinRemotePath(e.conn, target.Dir, cr.Dest)
 
@@ -69,11 +76,19 @@ func (e *BinaryExecutor) Execute(ctx context.Context, conn SSHConn, cr config.Cu
 		return r, nil
 	}
 
-	remoteMD5, err := e.conn.MD5(remotePath)
-	if err == nil && localMD5 == remoteMD5 {
-		r.Status = StatusEqual
-		r.Elapsed = time.Since(start)
-		return r, nil
+	// Skip the remote MD5 when we know the file doesn't exist on the target
+	// (populated by rdiff's bulk find — avoids one SFTP error per missing binary).
+	var remoteMD5 string
+	if RemoteFilesKnown(ctx) && !RemoteFileExists(ctx, remotePath) {
+		remoteMD5 = "" // file absent; falls through to "changed" below
+	} else {
+		var err error
+		remoteMD5, err = e.conn.MD5(remotePath)
+		if err == nil && localMD5 == remoteMD5 {
+			r.Status = StatusEqual
+			r.Elapsed = time.Since(start)
+			return r, nil
+		}
 	}
 
 	// MD5 differs — capture paths, timestamps and checksums for display/drift detection.

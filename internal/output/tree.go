@@ -100,7 +100,11 @@ func RenderTree(results []cue.Result, target string, total time.Duration,
 		sb.WriteString("\n")
 		fmt.Fprintf(&sb, "  %s\n", g.label)
 		for _, r := range g.rows {
-			fmt.Fprintf(&sb, "    %s  %s\n", treeStatusSymbol(r, level), r.CueName)
+			name := r.CueName
+			if r.FileTotal > 0 {
+				name += fmt.Sprintf("  %d/%d", r.FileChanged, r.FileTotal)
+			}
+			fmt.Fprintf(&sb, "    %s  %s\n", treeStatusSymbol(r, level), name)
 		}
 	}
 

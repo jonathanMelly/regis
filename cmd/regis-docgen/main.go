@@ -406,7 +406,7 @@ func buildDenseSchema(typesFile string) (string, error) {
 		}
 		switch fi.yamlKey {
 		case "src":
-			b.WriteString("        # ── file upload: binary/secret = single file · config = multi-file/glob/tree · pack = glob tree with prune ──\n")
+			b.WriteString("        # ── file upload: binary/secret = single file · config = multi-file/glob/tree · pack = glob tree with prune · or use git: true instead of src for pack ──\n")
 		case "shell":
 			b.WriteString("        # ── action / generate ──\n")
 		case "post":
@@ -418,7 +418,7 @@ func buildDenseSchema(typesFile string) (string, error) {
 		case "manager":
 			b.WriteString("        # ── service (manager: present infers nature: service) ──\n")
 		case "rollback":
-			b.WriteString("        # ── per-cue rollback (infers on_error: rollback; true/\"cmd\"/{shell,sudo}) ──\n")
+			b.WriteString("        # ── per-cue rollback (infers on_error: rollback; true/\"cmd\"/{shell,sudo}/defer) ──\n")
 		}
 		fl(pfx, fi.yamlKey, schemaVal(fi, cueReq[fi.yamlKey]), schemaComment(fi, cueReq[fi.yamlKey]))
 	}
@@ -811,7 +811,7 @@ func buildSchemaSection(typesFile string) (string, error) {
 	buf.WriteString("**Inferred `on_error: rollback`**: if any direct cue in a scenario declares `rollback: true` or `rollback: \"cmd\"`, the runner automatically treats that scenario as `on_error: rollback` — no explicit setting needed.\n\n")
 
 	buf.WriteString("**Per-cue rollback syntax** (on any cue in `cues:`):\n\n")
-	buf.WriteString("```yaml\n# File natures — restore from previous snapshot\n- name: frontend\n  nature: pack\n  src: dist/**\n  dest: ./\n  rollback: true          # restores all pack files from previous snapshot\n\n# Action natures — run a compensation command\n- name: go-offline\n  shell: touch maintenance.flag\n  rollback: \"rm -f maintenance.flag\"   # undo: remove the flag\n\n# Or with sudo:\n- name: deploy-service\n  shell: systemctl start myapp\n  rollback:\n    shell: systemctl stop myapp\n    sudo: true\n```\n\n")
+	buf.WriteString("```yaml\n# File natures — restore from previous snapshot\n- name: frontend\n  nature: pack\n  src: dist/**\n  dest: ./\n  rollback: true          # restores all pack files from previous snapshot\n\n# Action natures — run a compensation command\n- name: go-offline\n  shell: touch maintenance.flag\n  rollback: \"rm -f maintenance.flag\"   # undo: remove the flag\n\n# Or with sudo:\n- name: deploy-service\n  shell: systemctl start myapp\n  rollback:\n    shell: systemctl stop myapp\n    sudo: true\n\n# rollback: defer — re-run this cue's shell AFTER all per-cue file restores complete.\n# Use when the command must reconcile with restored files (e.g. dependency install).\n- name: install-deps\n  shell: composer install\n  rollback: defer         # skipped in reverse phase; re-run after vendor/ is restored\n```\n\n")
 
 	buf.WriteString("`$RELEASE_ID` is injected into the env of every cue and every rollback action at deploy start, so pre-deploy backup labels and rollback restore labels match:\n\n")
 

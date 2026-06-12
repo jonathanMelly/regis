@@ -5,11 +5,46 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"git.disroot.org/jmy/regis/internal/config"
 	"git.disroot.org/jmy/regis/internal/cue"
 )
+
+// stepWithFileProgress wraps the file-progress callback already in ctx so that
+// the cueName passed to callers is prefixed with the scenario label. This lets
+// the spinner show "ScenarioLabel / cueName  N/M" instead of just "cueName  N/M".
+func stepWithFileProgress(ctx context.Context, step Step) context.Context {
+	fn := cue.FileProgressFrom(ctx)
+	if fn == nil {
+		return ctx
+	}
+	label := step.ScenarioDesc
+	if label == "" {
+		label = step.ScenarioName
+	}
+	return cue.WithFileProgress(ctx, func(cueName string, scanned, total int) {
+		fn(label+" > "+cueName, scanned, total)
+	})
+}
+
+// notifyStep calls the pre-step progress callback and, in debug mode, writes a
+// labelled header to the debug writer. Both are no-ops when their context keys are absent.
+func notifyStep(ctx context.Context, step Step, suffix string) {
+	if fn := cue.PreStepFrom(ctx); fn != nil {
+		fn(step.ScenarioName, step.Name, step.ScenarioDesc)
+	}
+	w := cue.DebugWriterFrom(ctx)
+	if w == nil {
+		return
+	}
+	label := step.ScenarioName + " / " + step.Name
+	if suffix != "" {
+		label += " " + suffix
+	}
+	fmt.Fprintf(w, "[debug] --- %s ---\n", label)
+}
 
 // Step is one resolved cue within the execution plan.
 type Step struct {
@@ -101,7 +136,9 @@ func executeSequential(
 ) ([]cue.Result, error) {
 	var results []cue.Result
 	for _, step := range steps {
-		r, err := fn(ctx, conn, step.CueRef, target)
+		notifyStep(ctx, step, "")
+		stepCtx := stepWithFileProgress(ctx, step)
+		r, err := fn(stepCtx, conn, step.CueRef, target)
 		if err != nil {
 			return results, fmt.Errorf("step %s: %w", step.Name, err)
 		}
@@ -131,28 +168,60 @@ func executeRemote(
 		return nil, nil
 	}
 
-	// Stage 1: parallel pre-check — all steps with dry-run context.
-	// Each executor's read-only path runs concurrently over the shared SSH connection.
-	// gossh.Client.NewSession is safe for concurrent use.
+	// Stage 1: pre-check with dry-run context.
+	// Normally runs in parallel (gossh.Client.NewSession is goroutine-safe).
+	// In debug mode, runs sequentially so per-step headers and SSH traces are readable.
 	checkCtx := cue.WithDryRun(ctx)
 	type checkItem struct {
 		result cue.Result
 		err    error
 	}
 	checks := make([]checkItem, len(steps))
-	var wg sync.WaitGroup
-	for i, step := range steps {
-		i, step := i, step
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			r, err := fn(checkCtx, conn, step.CueRef, target)
+	if cue.DebugWriterFrom(ctx) != nil {
+		for i, step := range steps {
+			notifyStep(ctx, step, "")
+			stepCtx := stepWithFileProgress(checkCtx, step)
+			r, err := fn(stepCtx, conn, step.CueRef, target)
 			r.ScenarioName = step.ScenarioName
 			r.ScenarioDesc = step.ScenarioDesc
 			checks[i] = checkItem{result: r, err: err}
-		}()
+			if fn := cue.CheckResultFrom(checkCtx); fn != nil {
+				fn(r)
+			}
+		}
+	} else {
+		if fn := cue.PrePhaseFrom(checkCtx); fn != nil {
+			infos := make([]cue.StepInfo, len(steps))
+			for i, s := range steps {
+				infos[i] = cue.StepInfo{Name: s.Name, ScenarioName: s.ScenarioName, ScenarioDesc: s.ScenarioDesc}
+			}
+			fn(infos)
+		}
+		var wg sync.WaitGroup
+		var checked int32
+		total := len(steps)
+		for i, step := range steps {
+			i, step := i, step
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				notifyStep(checkCtx, step, "")
+				stepCtx := stepWithFileProgress(checkCtx, step)
+				r, err := fn(stepCtx, conn, step.CueRef, target)
+				r.ScenarioName = step.ScenarioName
+				r.ScenarioDesc = step.ScenarioDesc
+				checks[i] = checkItem{result: r, err: err}
+				if fn := cue.CheckResultFrom(checkCtx); fn != nil {
+					fn(r)
+				}
+				n := int(atomic.AddInt32(&checked, 1))
+				if fn := cue.CueProgressFrom(checkCtx); fn != nil {
+					fn(n, total)
+				}
+			}()
+		}
+		wg.Wait()
 	}
-	wg.Wait()
 
 	// If the caller already requested dry-run (e.g. rdiff), the pre-check results
 	// are the final results — no apply stage needed.
@@ -185,7 +254,9 @@ func executeRemote(
 			continue
 		}
 		// Changed, Skipped (action), Failed pre-check, or pre-check error — apply now.
-		r, err := fn(ctx, conn, step.CueRef, target)
+		notifyStep(ctx, step, "(apply)")
+		stepCtx := stepWithFileProgress(ctx, step)
+		r, err := fn(stepCtx, conn, step.CueRef, target)
 		if err != nil {
 			return results, fmt.Errorf("step %s: %w", step.Name, err)
 		}
