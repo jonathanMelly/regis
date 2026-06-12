@@ -141,6 +141,23 @@ func CueProgressFrom(ctx context.Context) func(checked, total int) {
 	return fn
 }
 
+type localDirKey struct{}
+
+// WithLocalDir stores the local project directory (cfg.BaseDir) so local shell
+// executors (action local, generate, render) run with the project root as CWD.
+func WithLocalDir(ctx context.Context, dir string) context.Context {
+	if dir == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, localDirKey{}, dir)
+}
+
+// LocalDirFrom returns the local project directory stored in ctx, or "" if absent.
+func LocalDirFrom(ctx context.Context) string {
+	s, _ := ctx.Value(localDirKey{}).(string)
+	return s
+}
+
 type fileProgressKey struct{}
 
 // WithFileProgress stores a callback that multi-file executors (pack, config multi-src,

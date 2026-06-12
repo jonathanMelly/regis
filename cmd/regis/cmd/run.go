@@ -194,6 +194,7 @@ func newRunCommand(gf *GlobalFlags) *cobra.Command {
 				}
 
 				ctx := populateRemoteFiles(context.Background(), conn, tgt.Dir)
+				ctx = cue.WithLocalDir(ctx, cfg.BaseDir)
 				if gf.Debug {
 					ctx = cue.WithDebugWriter(ctx, os.Stderr)
 				}

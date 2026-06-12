@@ -43,11 +43,16 @@ func (e *ActionExecutor) Execute(ctx context.Context, _ SSHConn, cr config.CueRe
 	var exitCode int
 	var runErr error
 
+	remoteShell := cr.Shell
+	if !cr.Local && target.Dir != "" {
+		remoteShell = "cd " + shellQuote(target.Dir) + " && " + cr.Shell
+	}
+
 	useSudo := !cr.Local && (cr.Sudo || target.Sudo)
 	if cr.Local {
 		stdout, stderr, exitCode, runErr = runLocal(ctx, cr.Shell, cr.Env)
 	} else if useSudo {
-		cmd := cr.Shell
+		cmd := remoteShell
 		if len(cr.Env) > 0 {
 			var sb strings.Builder
 			for k, v := range cr.Env {
@@ -58,7 +63,7 @@ func (e *ActionExecutor) Execute(ctx context.Context, _ SSHConn, cr config.CueRe
 		}
 		stdout, stderr, exitCode, runErr = e.conn.RunSudo(cmd)
 	} else {
-		stdout, stderr, exitCode, runErr = e.conn.RunWithEnv(cr.Shell, cr.Env)
+		stdout, stderr, exitCode, runErr = e.conn.RunWithEnv(remoteShell, cr.Env)
 	}
 
 	if runErr != nil {
@@ -155,6 +160,9 @@ func runLocal(ctx context.Context, shell string, env map[string]string) (stdout,
 		args = []string{"sh", "-c", shell}
 	}
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+	if dir := LocalDirFrom(ctx); dir != "" {
+		cmd.Dir = dir
+	}
 	if len(env) > 0 {
 		cmd.Env = os.Environ()
 		for k, v := range env {

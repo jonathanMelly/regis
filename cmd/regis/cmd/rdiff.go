@@ -152,6 +152,7 @@ Optional filter: comma-separated scenario or cue names to check a subset.
 				}
 
 				ctx = populateRemoteFiles(ctx, conn, tgt.Dir)
+				ctx = cue.WithLocalDir(ctx, cfg.BaseDir)
 
 				spinner.Stop()
 
