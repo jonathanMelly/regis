@@ -66,7 +66,7 @@ func (e *ConfigExecutor) Execute(ctx context.Context, conn SSHConn, cr config.Cu
 }
 
 func (e *ConfigExecutor) executeSingle(ctx context.Context, cr config.CueRef, target config.Target, r Result, localPath string, start time.Time) (Result, error) {
-	remotePath := joinRemotePath(e.conn, target.Dir, cr.Dest)
+	remotePath := JoinRemotePath(e.conn, target.Dir, cr.Dest)
 
 	localData, err := os.ReadFile(localPath)
 	if err != nil {
@@ -135,7 +135,7 @@ func (e *ConfigExecutor) executeSingle(ctx context.Context, cr config.CueRef, ta
 // Glob patterns use tree mode (preserve subdirectory structure); named paths use basename.
 // All diffs are aggregated into r.Diff. Status is Changed if any file changed.
 func (e *ConfigExecutor) executeMulti(ctx context.Context, cr config.CueRef, target config.Target, r Result, srcs []resolvedSrc, start time.Time) (Result, error) {
-	remoteDest := joinRemotePath(e.conn, target.Dir, strings.TrimRight(cr.Dest, "/"))
+	remoteDest := JoinRemotePath(e.conn, target.Dir, strings.TrimRight(cr.Dest, "/"))
 	sep := "/"
 	if e.conn != nil {
 		sep = e.conn.PathSep()

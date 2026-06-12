@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -183,7 +182,6 @@ type mockSSHConn struct {
 	runErr     error // when non-nil, Run returns this error
 }
 
-func (m *mockSSHConn) MD5(path string) (string, error) { return "", nil }
 func (m *mockSSHConn) Upload(l, r string, mode fs.FileMode, sudo bool) error { return nil }
 func (m *mockSSHConn) UploadBytes(data []byte, remote string, mode fs.FileMode, sudo bool) error {
 	if m.uploadFn != nil {
@@ -211,7 +209,6 @@ func (m *mockSSHConn) RunWithEnv(cmd string, env map[string]string) (string, str
 }
 func (m *mockSSHConn) Download(path string) ([]byte, error) { return nil, nil }
 func (m *mockSSHConn) Exists(path string) (bool, error)     { return false, nil }
-func (m *mockSSHConn) Stat(path string) (time.Time, error)  { return time.Time{}, nil }
 func (m *mockSSHConn) PathSep() string                      { return "/" }
 
 // Compile-time check.

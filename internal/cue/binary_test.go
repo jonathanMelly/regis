@@ -3,8 +3,10 @@ package cue_test
 
 import (
 	"context"
+	"fmt"
 	"io/fs"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,19 +16,15 @@ import (
 
 // mockConn implements SSHConn for testing executors without a real SSH connection.
 type mockConn struct {
-	remoteMD5  string
 	uploadErr  error
-	uploaded   []byte
 	uploadPath string
+	uploaded   []byte // last bytes passed to UploadBytes
 	// runFunc lets tests configure the response to Run calls.
-	// Default (nil): returns ("", "", 0, nil).
 	runFunc func(cmd string) (string, string, int, error)
 	// downloads lets tests provide per-path remote content for Download calls.
-	// Default (nil): returns (nil, nil).
 	downloads map[string][]byte
 }
 
-func (m *mockConn) MD5(path string) (string, error) { return m.remoteMD5, nil }
 func (m *mockConn) Upload(local, remote string, mode fs.FileMode, sudo bool) error {
 	m.uploadPath = remote
 	return m.uploadErr
@@ -42,7 +40,7 @@ func (m *mockConn) Run(cmd string) (string, string, int, error) {
 	}
 	return "", "", 0, nil
 }
-func (m *mockConn) RunSudo(cmd string) (string, string, int, error) { return "", "", 0, nil }
+func (m *mockConn) RunSudo(cmd string) (string, string, int, error)  { return "", "", 0, nil }
 func (m *mockConn) RunWithEnv(cmd string, env map[string]string) (string, string, int, error) {
 	return "", "", 0, nil
 }
@@ -55,36 +53,96 @@ func (m *mockConn) Download(path string) ([]byte, error) {
 	return nil, nil
 }
 func (m *mockConn) Exists(path string) (bool, error) { return true, nil }
-func (m *mockConn) Stat(path string) (time.Time, error) { return time.Time{}, nil }
-func (m *mockConn) PathSep() string                     { return "/" }
+func (m *mockConn) PathSep() string                  { return "/" }
 
-func TestBinaryExecutor_unchanged(t *testing.T) {
+// TestBinaryExecutor_fastPath_mtimeSize: mtime+size match in pre-fetched stats → Equal, no Run calls.
+func TestBinaryExecutor_fastPath_mtimeSize(t *testing.T) {
+	dir := t.TempDir()
+	localPath := dir + "/saver"
+	os.WriteFile(localPath, []byte("binary content"), 0755)
+
+	fi, _ := os.Stat(localPath)
+	stats := map[string]cue.RemoteStat{
+		"/opt/app/saver": {Mtime: fi.ModTime(), Size: fi.Size()},
+	}
+	ctx := cue.WithRemoteStats(context.Background(), stats)
+
+	var runCalled bool
+	mock := &mockConn{runFunc: func(cmd string) (string, string, int, error) {
+		runCalled = true
+		return "", "", 0, nil
+	}}
+
+	ex := cue.NewBinaryExecutor(mock)
+	cr := config.CueRef{Name: "bin", Nature: "binary", Src: config.StringOrList{localPath}, Dest: "/opt/app/saver"}
+	result, err := ex.Execute(ctx, nil, cr, config.Target{Dir: "/opt/app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != cue.StatusEqual {
+		t.Errorf("want StatusEqual (mtime+size match), got %v", result.Status)
+	}
+	if runCalled {
+		t.Error("expected no SSH calls for fast-path equal")
+	}
+}
+
+// TestBinaryExecutor_fastPath_hashMatch: mtime/size differ but hash matches → Equal.
+func TestBinaryExecutor_fastPath_hashMatch(t *testing.T) {
+	dir := t.TempDir()
+	localPath := dir + "/saver"
+	os.WriteFile(localPath, []byte("binary content"), 0755)
+
+	localHash, _ := cue.LocalHash(localPath)
+	stats := map[string]cue.RemoteStat{
+		"/opt/app/saver": {Mtime: time.Unix(1, 0), Size: 999, Hash: localHash},
+	}
+	ctx := cue.WithRemoteStats(context.Background(), stats)
+
+	mock := &mockConn{}
+	ex := cue.NewBinaryExecutor(mock)
+	cr := config.CueRef{Name: "bin", Nature: "binary", Src: config.StringOrList{localPath}, Dest: "/opt/app/saver"}
+	result, err := ex.Execute(ctx, nil, cr, config.Target{Dir: "/opt/app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != cue.StatusEqual {
+		t.Errorf("want StatusEqual (hash match), got %v", result.Status)
+	}
+}
+
+// TestBinaryExecutor_fallback_unchanged: no pre-fetched stats, stat+hash via Run → Equal.
+func TestBinaryExecutor_fallback_unchanged(t *testing.T) {
 	dir := t.TempDir()
 	localPath := dir + "/saver"
 	content := []byte("binary content")
 	os.WriteFile(localPath, content, 0755)
 
-	localMD5, _ := cue.LocalMD5(localPath)
-	mock := &mockConn{remoteMD5: localMD5}
+	fi, _ := os.Stat(localPath)
+	localHash, _ := cue.LocalHash(localPath)
+
+	mock := &mockConn{runFunc: func(cmd string) (string, string, int, error) {
+		if strings.Contains(cmd, "stat -c") || strings.Contains(cmd, "stat -f") {
+			return fmt.Sprintf("%d %d", fi.ModTime().Unix(), fi.Size()), "", 0, nil
+		}
+		if strings.Contains(cmd, "md5sum") || strings.Contains(cmd, "md5 -q") {
+			return localHash + "  /opt/app/saver", "", 0, nil
+		}
+		return "", "", 0, nil
+	}}
 
 	ex := cue.NewBinaryExecutor(mock)
-	cr := config.CueRef{
-		Name:   "bin",
-		Nature: "binary",
-		Src:    config.StringOrList{localPath},
-		Dest:   "/opt/app/saver",
-	}
+	cr := config.CueRef{Name: "bin", Nature: "binary", Src: config.StringOrList{localPath}, Dest: "/opt/app/saver"}
 	result, err := ex.Execute(context.Background(), nil, cr, config.Target{Dir: "/opt/app"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.Status != cue.StatusEqual {
-		t.Errorf("want StatusEqual (MD5 match), got %v", result.Status)
+		t.Errorf("want StatusEqual (mtime+size match), got %v", result.Status)
 	}
 }
 
 // TestBinaryExecutor_noConn is a non-regression test for the rdiff nil-conn panic.
-// When the SSH dial fails, rdiff passes nil as conn; executor must return StatusFailed, not panic.
 func TestBinaryExecutor_noConn(t *testing.T) {
 	dir := t.TempDir()
 	localPath := dir + "/app"
@@ -99,12 +157,26 @@ func TestBinaryExecutor_noConn(t *testing.T) {
 	}
 }
 
+// TestBinaryExecutor_changed: stat differs, hash differs → Changed + post-action + SetMtime called.
 func TestBinaryExecutor_changed(t *testing.T) {
 	dir := t.TempDir()
 	localPath := dir + "/saver"
 	os.WriteFile(localPath, []byte("new binary"), 0755)
 
-	mock := &mockConn{remoteMD5: "different-md5-hash-here-xxxxxxxxxx"}
+	var touchCalled bool
+	mock := &mockConn{runFunc: func(cmd string) (string, string, int, error) {
+		if strings.Contains(cmd, "stat -c") || strings.Contains(cmd, "stat -f") {
+			return "1 1", "", 0, nil // mtime/size differ → triggers hash
+		}
+		if strings.Contains(cmd, "md5sum") || strings.Contains(cmd, "md5 -q") {
+			return "differenthash  /opt/app/saver", "", 0, nil
+		}
+		if strings.Contains(cmd, "touch") {
+			touchCalled = true
+		}
+		return "", "", 0, nil
+	}}
+
 	ex := cue.NewBinaryExecutor(mock)
 	cr := config.CueRef{
 		Name:   "bin",
@@ -122,5 +194,8 @@ func TestBinaryExecutor_changed(t *testing.T) {
 	}
 	if len(result.PostActions) == 0 {
 		t.Error("expected post-action collected")
+	}
+	if !touchCalled {
+		t.Error("expected SetRemoteMtime (touch) call after upload")
 	}
 }

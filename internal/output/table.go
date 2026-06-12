@@ -270,14 +270,14 @@ func cueDetailLines(r cue.Result, showDiff bool, showStdout bool, minfo *Manifes
 		lines = append(lines, fmt.Sprintf("  ⚠ %s: remote file differs from last deploy manifest", r.CueName))
 		if minfo != nil {
 			lines = append(lines, fmt.Sprintf("     last deployed: %s  (%s, %s)",
-				truncate(r.ManifestChecksum, 12),
+				truncate(r.ManifestHash, 12),
 				minfo.Release,
 				minfo.DeployedAt.Format("2006-01-02 15:04"),
 			))
-		} else if r.ManifestChecksum != "" {
-			lines = append(lines, fmt.Sprintf("     last deployed: %s", truncate(r.ManifestChecksum, 12)))
+		} else if r.ManifestHash != "" {
+			lines = append(lines, fmt.Sprintf("     last deployed: %s", truncate(r.ManifestHash, 12)))
 		}
-		lines = append(lines, fmt.Sprintf("     remote now:    %s", truncate(r.RemoteMD5, 12)))
+		lines = append(lines, fmt.Sprintf("     remote now:    %s", truncate(r.RemoteHash, 12)))
 	}
 
 	// Warnings — always shown regardless of status or verbosity.
@@ -309,13 +309,13 @@ func cueDetailLines(r cue.Result, showDiff bool, showStdout bool, minfo *Manifes
 		}
 	case cue.StatusChanged:
 		// Binary cues: always show path + mtime + MD5 comparison when available.
-		if r.Nature == "binary" && r.LocalMD5 != "" {
+		if r.Nature == "binary" && r.LocalHash != "" {
 			lines = append(lines, fmt.Sprintf("  %s:", r.CueName))
 			if r.LocalPath != "" {
 				lines = append(lines, fmt.Sprintf("    %s → %s", r.LocalPath, r.RemotePath))
 			}
-			lines = append(lines, fmt.Sprintf("    local : %s  %s", r.LocalMtime.Format("2006-01-02 15:04"), truncate(r.LocalMD5, 12)))
-			lines = append(lines, fmt.Sprintf("    remote: %s  %s", r.RemoteMtime.Format("2006-01-02 15:04"), truncate(r.RemoteMD5, 12)))
+			lines = append(lines, fmt.Sprintf("    local : %s  %s", r.LocalMtime.Format("2006-01-02 15:04"), truncate(r.LocalHash, 12)))
+			lines = append(lines, fmt.Sprintf("    remote: %s  %s", r.RemoteMtime.Format("2006-01-02 15:04"), truncate(r.RemoteHash, 12)))
 			break
 		}
 		if showDiff && r.Diff != "" {

@@ -25,7 +25,7 @@ var reservedNames = map[string]bool{
 }
 
 // populateRemoteFiles runs a single find on the target and stores the file set
-// in ctx so executors can skip download/MD5 round-trips for absent files.
+// in ctx so executors can skip download/hash round-trips for absent files.
 func populateRemoteFiles(ctx context.Context, conn cue.SSHConn, dir string) context.Context {
 	if conn == nil {
 		return ctx
@@ -220,6 +220,7 @@ func newRunCommand(gf *GlobalFlags) *cobra.Command {
 
 				env, _ := config.BuildEnvForTarget(cfg, &tgt)
 				dispatch := runner.Dispatch{
+					BulkConn: conn,
 					Binary:   cue.NewBinaryExecutor(conn),
 					Config:   cue.NewConfigExecutor(conn, env),
 					Secret:   cue.NewSecretExecutor(conn),

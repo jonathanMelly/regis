@@ -134,7 +134,7 @@ func (e *RenderExecutor) executeFile(ctx context.Context, cr config.CueRef, targ
 		return r, nil
 	}
 
-	remotePath := joinRemotePath(e.conn, target.Dir, cr.Dest)
+	remotePath := JoinRemotePath(e.conn, target.Dir, cr.Dest)
 	var remoteData []byte
 	if !RemoteFilesKnown(ctx) || RemoteFileExists(ctx, remotePath) {
 		remoteData, _ = e.conn.Download(remotePath)
@@ -142,14 +142,14 @@ func (e *RenderExecutor) executeFile(ctx context.Context, cr config.CueRef, targ
 
 	// Binary content: MD5 comparison; text content: unified diff.
 	if isBinaryContent(localData) || isBinaryContent(remoteData) {
-		lmd5 := localMD5bytes(localData)
-		rmd5 := localMD5bytes(remoteData)
+		lmd5 := localHashBytes(localData)
+		rmd5 := localHashBytes(remoteData)
 		if lmd5 == rmd5 {
 			r.Status = StatusEqual
 			r.Elapsed = time.Since(start)
 			return r, nil
 		}
-		r.Diff = fmt.Sprintf("binary changed  remote:%s  rendered:%s", truncateMD5(rmd5), truncateMD5(lmd5))
+		r.Diff = fmt.Sprintf("binary changed  remote:%s  rendered:%s", truncateHash(rmd5), truncateHash(lmd5))
 	} else {
 		fromLabel := "remote: " + remotePath
 		toLabel := "rendered: " + cr.Dest
@@ -196,8 +196,8 @@ func (e *RenderExecutor) executeFolder(ctx context.Context, cr config.CueRef, ta
 	}
 
 	// Ensure remoteDest has a trailing separator for folder mode path joins.
-	// joinRemotePath strips the trailing slash that signals folder mode.
-	remoteDest := joinRemotePath(e.conn, target.Dir, cr.Dest)
+	// JoinRemotePath strips the trailing slash that signals folder mode.
+	remoteDest := JoinRemotePath(e.conn, target.Dir, cr.Dest)
 	sep := e.conn.PathSep()
 	if !strings.HasSuffix(remoteDest, sep) {
 		remoteDest += sep
@@ -252,12 +252,12 @@ func (e *RenderExecutor) executeFolder(ctx context.Context, cr config.CueRef, ta
 
 		var fileChanged bool
 		if isBinaryContent(localData) || isBinaryContent(remoteData) {
-			lmd5 := localMD5bytes(localData)
-			rmd5 := localMD5bytes(remoteData)
+			lmd5 := localHashBytes(localData)
+			rmd5 := localHashBytes(remoteData)
 			fileChanged = lmd5 != rmd5
 			if fileChanged {
 				fmt.Fprintf(&diffBuf, "binary %s  remote:%s  rendered:%s\n",
-					lf.relPath, truncateMD5(rmd5), truncateMD5(lmd5))
+					lf.relPath, truncateHash(rmd5), truncateHash(lmd5))
 			}
 		} else {
 			diff, changed := TextDiff(string(localData), string(remoteData),
@@ -353,14 +353,14 @@ func isBinaryContent(data []byte) bool {
 	return bytes.IndexByte(data, 0) >= 0
 }
 
-// localMD5bytes returns the hex MD5 of data.
-func localMD5bytes(data []byte) string {
+// localHashBytes returns the hex hash of data.
+func localHashBytes(data []byte) string {
 	h := md5.Sum(data)
 	return fmt.Sprintf("%x", h)
 }
 
-// truncateMD5 returns the first 12 hex chars of an MD5 string.
-func truncateMD5(s string) string {
+// truncateHash returns the first 12 hex chars of a hash string.
+func truncateHash(s string) string {
 	if len(s) > 12 {
 		return s[:12]
 	}

@@ -7,9 +7,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"strconv"
 	"strings"
-	"time"
 
 	"github.com/pkg/sftp"
 )
@@ -104,8 +102,8 @@ func (c *Conn) Download(remotePath string) ([]byte, error) {
 	return io.ReadAll(f)
 }
 
-// MD5 returns the hex MD5 of a remote file using md5sum (Linux) or md5 -q (macOS).
-func (c *Conn) MD5(remotePath string) (string, error) {
+// Hash returns the hex hash of a remote file using md5sum (Linux) or md5 -q (macOS).
+func (c *Conn) Hash(remotePath string) (string, error) {
 	var err error
 	remotePath, err = c.ExpandHome(remotePath)
 	if err != nil {
@@ -116,18 +114,18 @@ func (c *Conn) MD5(remotePath string) (string, error) {
 		var stderr string
 		stdout, stderr, code, err = c.Run("md5 -q " + shellQuote(remotePath))
 		if err != nil || code != 0 {
-			return "", fmt.Errorf("md5 %s (exit %d): %s", remotePath, code, stderr)
+			return "", fmt.Errorf("hash %s (exit %d): %s", remotePath, code, stderr)
 		}
 	}
 	parts := strings.Fields(strings.TrimSpace(stdout))
 	if len(parts) == 0 {
-		return "", fmt.Errorf("unexpected md5 output: %q", stdout)
+		return "", fmt.Errorf("unexpected hash output: %q", stdout)
 	}
 	return parts[0], nil
 }
 
-// LocalMD5 computes the hex MD5 of a local file.
-func LocalMD5(path string) (string, error) {
+// LocalHash computes the hex hash of a local file.
+func LocalHash(path string) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return "", err
@@ -138,29 +136,6 @@ func LocalMD5(path string) (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf("%x", h.Sum(nil)), nil
-}
-
-// Stat returns the mtime of remotePath as a time.Time.
-// Tries Linux stat -c '%Y' first, falls back to macOS stat -f '%m'.
-// Returns zero time on any error (graceful: Windows targets, stat unavailable).
-func (c *Conn) Stat(remotePath string) (time.Time, error) {
-	var err error
-	remotePath, err = c.ExpandHome(remotePath)
-	if err != nil {
-		return time.Time{}, err
-	}
-	stdout, _, code, err := c.Run("stat -c '%Y' " + shellQuote(remotePath))
-	if err != nil || code != 0 {
-		stdout, _, code, err = c.Run("stat -f '%m' " + shellQuote(remotePath))
-		if err != nil || code != 0 {
-			return time.Time{}, nil
-		}
-	}
-	epoch, parseErr := strconv.ParseInt(strings.TrimSpace(stdout), 10, 64)
-	if parseErr != nil {
-		return time.Time{}, nil
-	}
-	return time.Unix(epoch, 0), nil
 }
 
 // Exists reports whether remotePath exists on the target.

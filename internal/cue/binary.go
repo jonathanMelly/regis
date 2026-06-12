@@ -1,6 +1,6 @@
 // internal/cue/binary.go
 // doc:nature binary
-// Uploads a compiled executable. Change detection via MD5.
+// Uploads a compiled executable. Change detection: mtime+size fast path, hash fallback.
 // Atomic upload: copies to <dest>.new, then mv. Direction: local→remote.
 // rollback: true — restores the previous binary from the local release snapshot.
 package cue
@@ -16,10 +16,10 @@ import (
 	"git.disroot.org/jmy/regis/internal/config"
 )
 
-// joinRemotePath resolves dest onto dir using the remote host's path separator.
+// JoinRemotePath resolves dest onto dir using the remote host's path separator.
 // conn.PathSep() provides the cached separator detected once at Dial time.
 // Falls back to Unix "/" when conn is nil (tests, local-only phases).
-func joinRemotePath(conn SSHConn, dir, dest string) string {
+func JoinRemotePath(conn SSHConn, dir, dest string) string {
 	sep := "/"
 	if conn != nil {
 		sep = conn.PathSep()
@@ -27,7 +27,6 @@ func joinRemotePath(conn SSHConn, dir, dest string) string {
 	if sep == `\` {
 		return joinWindowsRemote(dir, dest)
 	}
-	// Unix: always forward slashes regardless of where regis runs.
 	if path.IsAbs(dest) {
 		return dest
 	}
@@ -36,7 +35,6 @@ func joinRemotePath(conn SSHConn, dir, dest string) string {
 
 // joinWindowsRemote joins a Windows remote path using backslash.
 func joinWindowsRemote(dir, dest string) string {
-	// dest is absolute if it has a drive letter or is rooted with \ or /
 	if (len(dest) >= 2 && dest[1] == ':') ||
 		strings.HasPrefix(dest, `\`) || strings.HasPrefix(dest, "/") {
 		return strings.ReplaceAll(dest, "/", `\`)
@@ -44,14 +42,14 @@ func joinWindowsRemote(dir, dest string) string {
 	return strings.TrimRight(dir, `/\`) + `\` + dest
 }
 
-// BinaryExecutor handles nature: binary cues (MD5 compare + upload).
+// BinaryExecutor handles nature: binary cues (mtime+size fast compare, hash fallback, upload).
 type BinaryExecutor struct{ conn SSHConn }
 
-// NewBinaryExecutor creates a BinaryExecutor. conn is used for MD5 + Upload calls.
+// NewBinaryExecutor creates a BinaryExecutor.
 func NewBinaryExecutor(conn SSHConn) *BinaryExecutor { return &BinaryExecutor{conn: conn} }
 
-// Execute compares local MD5 to remote, uploads if different.
-func (e *BinaryExecutor) Execute(ctx context.Context, conn SSHConn, cr config.CueRef, target config.Target) (Result, error) {
+// Execute compares local file to remote (mtime+size fast path, hash fallback), uploads if different.
+func (e *BinaryExecutor) Execute(ctx context.Context, _ SSHConn, cr config.CueRef, target config.Target) (Result, error) {
 	start := time.Now()
 	r := Result{
 		CueName:        cr.Name,
@@ -66,63 +64,122 @@ func (e *BinaryExecutor) Execute(ctx context.Context, conn SSHConn, cr config.Cu
 		return r, nil
 	}
 
-	localPath := string(cr.Src[0])
-	remotePath := joinRemotePath(e.conn, target.Dir, cr.Dest)
+	localPath := cr.Src[0]
+	remotePath := JoinRemotePath(e.conn, target.Dir, cr.Dest)
 
-	localMD5, err := LocalMD5(localPath)
-	if err != nil {
-		r.Status = StatusFailed
-		r.Err = fmt.Errorf("local MD5 %s: %w", localPath, err)
+	var localMtime time.Time
+	var localSize int64 = -1
+	if fi, err := os.Stat(localPath); err == nil {
+		localMtime = fi.ModTime()
+		localSize = fi.Size()
+	}
+
+	fileKnownMissing := RemoteFilesKnown(ctx) && !RemoteFileExists(ctx, remotePath)
+
+	// ── fast path: look up bulk-prefetched stats ───────────────────────────────
+	if stats := RemoteStatsFrom(ctx); stats != nil {
+		rs, found := stats[remotePath]
+		if !found || rs.Size < 0 {
+			// file absent → treat as changed
+			return e.applyOrChanged(ctx, cr, target, r, start, localPath, remotePath, localMtime, "", "")
+		}
+		if rs.Hash != "" {
+			// hash pre-computed (mtime/size differed); compare with local
+			localHash, err := LocalHash(localPath)
+			if err != nil {
+				r.Status = StatusFailed
+				r.Err = fmt.Errorf("local hash %s: %w", localPath, err)
+				r.Elapsed = time.Since(start)
+				return r, nil
+			}
+			if rs.Hash == localHash {
+				r.Status = StatusEqual
+				r.Elapsed = time.Since(start)
+				return r, nil
+			}
+			r.LocalHash = localHash
+			r.RemoteHash = rs.Hash
+			r.LocalMtime = localMtime
+			r.RemoteMtime = rs.Mtime
+			return e.applyOrChanged(ctx, cr, target, r, start, localPath, remotePath, localMtime, localHash, rs.Hash)
+		}
+		// mtime+size matched local → equal
+		r.Status = StatusEqual
+		r.Elapsed = time.Since(start)
 		return r, nil
 	}
 
-	// Skip the remote MD5 when we know the file doesn't exist on the target
-	// (populated by rdiff's bulk find — avoids one SFTP error per missing binary).
-	var remoteMD5 string
-	if RemoteFilesKnown(ctx) && !RemoteFileExists(ctx, remotePath) {
-		remoteMD5 = "" // file absent; falls through to "changed" below
-	} else {
-		var err error
-		remoteMD5, err = e.conn.MD5(remotePath)
-		if err == nil && localMD5 == remoteMD5 {
+	// ── fallback: individual SSH calls ─────────────────────────────────────────
+	var remoteMtime time.Time
+	if !fileKnownMissing && localSize >= 0 {
+		var remoteSize int64
+		remoteMtime, remoteSize = StatRemote(e.conn, remotePath)
+		if !remoteMtime.IsZero() && remoteSize >= 0 &&
+			remoteMtime.Unix() == localMtime.Unix() && remoteSize == localSize {
 			r.Status = StatusEqual
 			r.Elapsed = time.Since(start)
 			return r, nil
 		}
 	}
 
-	// MD5 differs — capture paths, timestamps and checksums for display/drift detection.
-	r.LocalPath = localPath
-	r.RemotePath = remotePath
-	r.LocalMD5 = localMD5
-	r.RemoteMD5 = remoteMD5
-	if fi, statErr := os.Stat(localPath); statErr == nil {
-		r.LocalMtime = fi.ModTime()
+	localHash, err := LocalHash(localPath)
+	if err != nil {
+		r.Status = StatusFailed
+		r.Err = fmt.Errorf("local hash %s: %w", localPath, err)
+		r.Elapsed = time.Since(start)
+		return r, nil
 	}
-	r.RemoteMtime, _ = e.conn.Stat(remotePath)
 
-	// Check manifest drift: remote file was modified after last deploy.
-	if m := ManifestFrom(ctx); m != nil {
-		if expected, ok := m.Checksums[cr.Name]; ok && expected != "" {
-			r.ManifestDrift = remoteMD5 != expected
-			r.ManifestChecksum = expected
+	var remoteHash string
+	if !fileKnownMissing {
+		remoteHash, err = HashRemote(e.conn, remotePath)
+		if err == nil && localHash == remoteHash {
+			r.Status = StatusEqual
+			r.Elapsed = time.Since(start)
+			return r, nil
 		}
 	}
 
-	// Dry-run: change detected, but skip upload
+	r.LocalMtime = localMtime
+	r.RemoteMtime = remoteMtime
+	return e.applyOrChanged(ctx, cr, target, r, start, localPath, remotePath, localMtime, localHash, remoteHash)
+}
+
+// applyOrChanged sets manifest drift info and either uploads (real run) or returns StatusChanged (dry-run).
+func (e *BinaryExecutor) applyOrChanged(
+	ctx context.Context, cr config.CueRef, target config.Target, r Result,
+	start time.Time, localPath, remotePath string, localMtime time.Time,
+	localHash, remoteHash string,
+) (Result, error) {
+	r.LocalHash = localHash
+	r.RemoteHash = remoteHash
+	r.LocalPath = localPath
+	r.RemotePath = remotePath
+
+	if m := ManifestFrom(ctx); m != nil {
+		if expected, ok := m.Hashes[cr.Name]; ok && expected != "" {
+			r.ManifestDrift = remoteHash != expected
+			r.ManifestHash = expected
+		}
+	}
+
 	if IsDryRun(ctx) {
 		r.Status = StatusChanged
 		r.Elapsed = time.Since(start)
 		return r, nil
 	}
 
-	// Upload
 	useSudo := cr.Sudo || target.Sudo
 	if err := e.conn.Upload(localPath, remotePath, 0755, useSudo); err != nil {
 		r.Status = StatusFailed
 		r.Err = fmt.Errorf("upload %s: %w", localPath, err)
 		r.Elapsed = time.Since(start)
 		return r, nil
+	}
+
+	// Enforce mtime replication so next run can use the fast path.
+	if !localMtime.IsZero() {
+		SetRemoteMtime(e.conn, remotePath, localMtime)
 	}
 
 	r.Status = StatusChanged

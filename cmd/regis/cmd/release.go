@@ -238,11 +238,11 @@ func newReleaseCommand(gf *GlobalFlags) *cobra.Command {
 		},
 	})
 
-	// rdiff — compare checksums between two release manifests.
+	// rdiff — compare hashs between two release manifests.
 	rel.AddCommand(&cobra.Command{
 		Use:   "rdiff [id1] [id2]",
-		Short: "compare checksums between two release manifests",
-		Long: `rdiff compares the artifact checksums recorded in two release manifests.
+		Short: "compare hashs between two release manifests",
+		Long: `rdiff compares the artifact hashs recorded in two release manifests.
 
   No args:   compare the two most recent releases (latest vs previous).
   One arg:   compare id1 vs the most recent release.
@@ -305,19 +305,19 @@ func newReleaseCommand(gf *GlobalFlags) *cobra.Command {
 
 				type entry struct{ a, b string }
 				cues := make(map[string]entry)
-				for k, v := range mA.Checksums {
+				for k, v := range mA.Hashes {
 					e := cues[k]
 					e.a = v
 					cues[k] = e
 				}
-				for k, v := range mB.Checksums {
+				for k, v := range mB.Hashes {
 					e := cues[k]
 					e.b = v
 					cues[k] = e
 				}
 
 				if len(cues) == 0 {
-					fmt.Println("  no checksum data in either manifest")
+					fmt.Println("  no hash data in either manifest")
 					fmt.Println(strings.Repeat("─", 60))
 					return nil
 				}
@@ -436,7 +436,7 @@ func releasePreflight(conn releaseConn, releaseID, remoteDir, localDir string) p
 				summary:      "both present (manifest comparison skipped)",
 			}
 		}
-		if !checksumsEqual(remoteM.Checksums, localM.Checksums) {
+		if !hashesEqual(remoteM.Hashes, localM.Hashes) {
 			return preflightState{
 				action:       preflightStop,
 				remoteExists: true,
@@ -444,7 +444,7 @@ func releasePreflight(conn releaseConn, releaseID, remoteDir, localDir string) p
 				diverged:     true,
 				summary:      "mismatch",
 				reason: fmt.Sprintf(
-					"checksum mismatch — remote deployed_at %s, local deployed_at %s",
+					"hash mismatch — remote deployed_at %s, local deployed_at %s",
 					remoteM.DeployedAt.Format("2006-01-02 15:04:05"),
 					localM.DeployedAt.Format("2006-01-02 15:04:05"),
 				),
@@ -454,7 +454,7 @@ func releasePreflight(conn releaseConn, releaseID, remoteDir, localDir string) p
 			action:       preflightOK,
 			remoteExists: true,
 			localExists:  true,
-			summary:      "remote + local verified (checksums match)",
+			summary:      "remote + local verified (hashs match)",
 		}
 	}
 }
@@ -476,8 +476,8 @@ func loadBothManifests(conn releaseConn, releaseID, remoteDir, localDir string) 
 	return
 }
 
-// checksumsEqual reports whether two checksum maps are identical.
-func checksumsEqual(a, b map[string]string) bool {
+// hashesEqual reports whether two hash maps are identical.
+func hashesEqual(a, b map[string]string) bool {
 	if len(a) != len(b) {
 		return false
 	}

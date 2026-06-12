@@ -38,6 +38,9 @@ type Dispatch struct {
 	Render   cue.Executor
 	Pack     cue.Executor
 	Service  cue.Executor
+	// BulkConn is used for bulk stat/hash prefetch before the parallel check phase.
+	// Usually the same connection passed to NewBinaryExecutor.
+	BulkConn cue.SSHConn
 }
 
 // Run executes a list of scenario names against one target.
@@ -196,6 +199,7 @@ func Run(ctx context.Context, cfg *config.Config, scenarioNames []string, target
 	if opts.DryRun {
 		ctx = cue.WithDryRun(ctx)
 		if len(remotePhase.Steps) > 0 {
+			ctx = bulkPrefetchBinary(ctx, dispatch.BulkConn, remotePhase.Steps, target)
 			results, _ := ExecutePhase(ctx, remotePhase, nil, target, execWith(dispatch), onResult)
 			rr.Results = append(rr.Results, results...)
 			tallyCounts(rr, results)
@@ -238,6 +242,7 @@ func Run(ctx context.Context, cfg *config.Config, scenarioNames []string, target
 		}
 	}
 
+	ctx = bulkPrefetchBinary(ctx, dispatch.BulkConn, remotePhase.Steps, target)
 	results, phaseErr := ExecutePhase(ctx, remotePhase, conn, target, execWith(dispatch), onResult)
 	rr.Results = append(rr.Results, results...)
 	tallyCounts(rr, results)

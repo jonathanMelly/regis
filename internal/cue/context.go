@@ -4,6 +4,7 @@ package cue
 import (
 	"context"
 	"io"
+	"time"
 )
 
 type manifestKey struct{}
@@ -13,7 +14,7 @@ type Manifest struct {
 	Release    string
 	DeployedAt string // formatted for display
 	DeployedBy string
-	Checksums  map[string]string
+	Hashes     map[string]string
 }
 
 // WithManifest returns a context carrying the release manifest for drift detection.
@@ -39,6 +40,28 @@ func WithDebugWriter(ctx context.Context, w io.Writer) context.Context {
 func DebugWriterFrom(ctx context.Context) io.Writer {
 	w, _ := ctx.Value(debugWriterKey{}).(io.Writer)
 	return w
+}
+
+// RemoteStat holds the pre-fetched state of a remote file.
+// Hash is populated only when mtime/size differ from the local file — ready for manifest.
+type RemoteStat struct {
+	Mtime time.Time
+	Size  int64  // -1 when stat failed or file is absent
+	Hash  string // empty when mtime+size matched (no hash needed)
+}
+
+type remoteStatsKey struct{}
+
+// WithRemoteStats stores a bulk-prefetched map of remote file stats.
+// Each key is a fully-resolved remote path.
+func WithRemoteStats(ctx context.Context, stats map[string]RemoteStat) context.Context {
+	return context.WithValue(ctx, remoteStatsKey{}, stats)
+}
+
+// RemoteStatsFrom returns the map stored in ctx, or nil if absent.
+func RemoteStatsFrom(ctx context.Context) map[string]RemoteStat {
+	m, _ := ctx.Value(remoteStatsKey{}).(map[string]RemoteStat)
+	return m
 }
 
 type remoteFilesKey struct{}

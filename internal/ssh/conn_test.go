@@ -114,7 +114,7 @@ func TestUploadBytes_and_Download(t *testing.T) {
 	conn.Run("rm " + remote)
 }
 
-func TestMD5(t *testing.T) {
+func TestHash(t *testing.T) {
 	tgt := testTarget(t)
 	conn, err := regssh.Dial(tgt)
 	if err != nil {
@@ -124,15 +124,15 @@ func TestMD5(t *testing.T) {
 	conn.Run("mkdir -p " + tgt.Dir)
 
 	data := []byte("checksum content")
-	remote := tgt.Dir + "/regis-md5.bin"
+	remote := tgt.Dir + "/regis-hash.bin"
 	conn.UploadBytes(data, remote, 0644, false)
 
-	md5, err := conn.MD5(remote)
+	h, err := conn.Hash(remote)
 	if err != nil {
-		t.Fatalf("MD5: %v", err)
+		t.Fatalf("Hash: %v", err)
 	}
-	if len(md5) != 32 {
-		t.Errorf("unexpected MD5 length: %q", md5)
+	if len(h) != 32 {
+		t.Errorf("unexpected hash length: %q", h)
 	}
 	conn.Run("rm " + remote)
 }

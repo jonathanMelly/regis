@@ -145,7 +145,7 @@ Optional filter: comma-separated scenario or cue names to check a subset.
 							ctx = cue.WithManifest(ctx, &cue.Manifest{
 								Release:    m.Release,
 								DeployedBy: m.DeployedBy,
-								Checksums:  m.Checksums,
+								Hashes:  m.Hashes,
 							})
 						}
 					}

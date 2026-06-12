@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"time"
 
 	"git.disroot.org/jmy/regis/internal/cue"
 )
@@ -72,28 +71,6 @@ func (d *debugConn) Download(remotePath string) ([]byte, error) {
 		fmt.Fprintf(os.Stderr, "[debug]   ok: %d bytes\n", len(data))
 	}
 	return data, err
-}
-
-func (d *debugConn) MD5(remotePath string) (string, error) {
-	fmt.Fprintf(os.Stderr, "[debug] md5: %s\n", remotePath)
-	hash, err := d.inner.MD5(remotePath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "[debug]   error: %v\n", err)
-	} else {
-		fmt.Fprintf(os.Stderr, "[debug]   ok: %s\n", hash)
-	}
-	return hash, err
-}
-
-func (d *debugConn) Stat(remotePath string) (time.Time, error) {
-	fmt.Fprintf(os.Stderr, "[debug] stat: %s\n", remotePath)
-	t, err := d.inner.Stat(remotePath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "[debug]   error: %v\n", err)
-	} else {
-		fmt.Fprintf(os.Stderr, "[debug]   ok: %s\n", t)
-	}
-	return t, err
 }
 
 func (d *debugConn) Exists(remotePath string) (bool, error) {

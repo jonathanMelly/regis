@@ -59,10 +59,10 @@ type Result struct {
 	RemotePath       string        // remote file path (binary cues, for display)
 	LocalMtime       time.Time     // mtime of local file (binary cues)
 	RemoteMtime      time.Time     // mtime of remote file via Stat (binary cues)
-	LocalMD5         string        // local MD5 (binary cues, for display)
-	RemoteMD5        string        // remote MD5 (binary cues, for display + manifest verify)
-	ManifestDrift    bool              // true when remote MD5 ≠ manifest checksum
-	ManifestChecksum string            // manifest's expected checksum for this cue
+	LocalHash        string        // local hash (binary cues, for display)
+	RemoteHash       string        // remote hash (binary cues, for display + manifest verify)
+	ManifestDrift    bool          // true when remote hash ≠ manifest hash
+	ManifestHash     string        // manifest's expected hash for this cue
 	ArtifactPaths    map[string]string // snapshotKey → remote path (pack: cueName/relpath; populated by pack executor)
 	LocalArtifacts   map[string]string // snapshotKey → local file path (pack: cueName/relpath; populated by pack executor)
 	Warnings         []string          // shown with ⚠ in output for all statuses; used e.g. for git: true uncommitted-state alerts

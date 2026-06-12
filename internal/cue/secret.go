@@ -35,7 +35,7 @@ func (e *SecretExecutor) Execute(ctx context.Context, conn SSHConn, cr config.Cu
 	}
 
 	localPath := string(cr.Src[0])
-	remotePath := joinRemotePath(e.conn, target.Dir, cr.Dest)
+	remotePath := JoinRemotePath(e.conn, target.Dir, cr.Dest)
 	preserve := []string(cr.Preserve)
 
 	localData, err := os.ReadFile(localPath)

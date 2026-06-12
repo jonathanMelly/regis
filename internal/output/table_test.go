@@ -110,12 +110,12 @@ func TestAppendDetails_skipped_shows_stdout_reason(t *testing.T) {
 	}
 }
 
-func TestAppendDetails_binary_changed_shows_md5_mtime(t *testing.T) {
+func TestAppendDetails_binary_changed_shows_hash_mtime(t *testing.T) {
 	ts := time.Date(2026, 5, 31, 10, 32, 0, 0, time.UTC)
 	results := []cue.Result{
 		{CueName: "bin", Nature: "binary", Status: cue.StatusChanged,
-			LocalMD5:    "abc123def456789",
-			RemoteMD5:   "deadbeefcafe12",
+			LocalHash:    "abc123def456789",
+			RemoteHash:   "deadbeefcafe12",
 			LocalMtime:  ts,
 			RemoteMtime: ts.Add(-24 * time.Hour)},
 	}
@@ -204,8 +204,8 @@ func TestRenderTree_detailsBinary_noVerbose(t *testing.T) {
 			Nature: "binary", Status: cue.StatusChanged,
 			LocalPath:   "bin/saver",
 			RemotePath:  "/opt/app/saver",
-			LocalMD5:    "a1b2c3d4e5f6",
-			RemoteMD5:   "x9y8z7w6v5u4",
+			LocalHash:    "a1b2c3d4e5f6",
+			RemoteHash:   "x9y8z7w6v5u4",
 			LocalMtime:  ts,
 			RemoteMtime: ts.Add(-24 * time.Hour),
 		},

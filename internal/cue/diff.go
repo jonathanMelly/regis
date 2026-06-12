@@ -7,8 +7,6 @@ import (
 	"strings"
 
 	"github.com/pmezard/go-difflib/difflib"
-
-	sshpkg "git.disroot.org/jmy/regis/internal/ssh"
 )
 
 // TextDiff computes a unified diff between local and remote text content.
@@ -135,7 +133,3 @@ func mergeKeys(a, b map[string]string) []string {
 	return keys
 }
 
-// LocalMD5 is a thin re-export of ssh.LocalMD5 for use by cue executors.
-func LocalMD5(path string) (string, error) {
-	return sshpkg.LocalMD5(path)
-}

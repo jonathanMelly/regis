@@ -52,34 +52,34 @@ func writeLocalManifest(t *testing.T, releaseID string, m runner.ReleaseManifest
 	return dir
 }
 
-// ── checksumsEqual ────────────────────────────────────────────────────────────
+// ── hashesEqual ────────────────────────────────────────────────────────────
 
-func TestChecksumsEqual_identical(t *testing.T) {
+func TestHashesEqual_identical(t *testing.T) {
 	a := map[string]string{"bin": "aabb", "cfg": "ccdd"}
 	b := map[string]string{"bin": "aabb", "cfg": "ccdd"}
-	if !checksumsEqual(a, b) {
+	if !hashesEqual(a, b) {
 		t.Error("expected equal")
 	}
 }
 
-func TestChecksumsEqual_valueDiffer(t *testing.T) {
+func TestHashesEqual_valueDiffer(t *testing.T) {
 	a := map[string]string{"bin": "aabb"}
 	b := map[string]string{"bin": "xxxx"}
-	if checksumsEqual(a, b) {
+	if hashesEqual(a, b) {
 		t.Error("expected not equal")
 	}
 }
 
-func TestChecksumsEqual_lengthDiffer(t *testing.T) {
+func TestHashesEqual_lengthDiffer(t *testing.T) {
 	a := map[string]string{"bin": "aabb", "cfg": "ccdd"}
 	b := map[string]string{"bin": "aabb"}
-	if checksumsEqual(a, b) {
+	if hashesEqual(a, b) {
 		t.Error("expected not equal when lengths differ")
 	}
 }
 
-func TestChecksumsEqual_bothNil(t *testing.T) {
-	if !checksumsEqual(nil, nil) {
+func TestHashesEqual_bothNil(t *testing.T) {
+	if !hashesEqual(nil, nil) {
 		t.Error("two nil maps should be equal")
 	}
 }
@@ -158,7 +158,7 @@ func TestReleasePreflight_bothMatch(t *testing.T) {
 	m := runner.ReleaseManifest{
 		Release:    "v20260603-120000",
 		DeployedAt: time.Now(),
-		Checksums:  checksums,
+		Hashes:  checksums,
 	}
 	localDir := writeLocalManifest(t, "v20260603-120000", m)
 	conn := &mockConn{
@@ -179,12 +179,12 @@ func TestReleasePreflight_bothMismatch(t *testing.T) {
 	localM := runner.ReleaseManifest{
 		Release:    "v20260603-120000",
 		DeployedAt: time.Now(),
-		Checksums:  map[string]string{"bin": "aabbccdd"},
+		Hashes:  map[string]string{"bin": "aabbccdd"},
 	}
 	remoteM := runner.ReleaseManifest{
 		Release:    "v20260603-120000",
 		DeployedAt: time.Now().Add(-time.Hour),
-		Checksums:  map[string]string{"bin": "xxxxxxxx"}, // different checksum
+		Hashes:  map[string]string{"bin": "xxxxxxxx"}, // different checksum
 	}
 	localDir := writeLocalManifest(t, "v20260603-120000", localM)
 	conn := &mockConn{

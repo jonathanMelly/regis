@@ -26,47 +26,47 @@ func TestNewReleaseID_format(t *testing.T) {
 
 func TestBuildManifest_checksums_binaryConfigSecret(t *testing.T) {
 	results := []cue.Result{
-		{CueName: "bin", Nature: "binary", Status: cue.StatusChanged, LocalMD5: "aabbcc"},
-		{CueName: "cfg", Nature: "config", Status: cue.StatusChanged, LocalMD5: "ddeeff"},
-		{CueName: "sec", Nature: "secret", Status: cue.StatusChanged, LocalMD5: "112233"},
-		{CueName: "svc", Nature: "service", Status: cue.StatusChanged, LocalMD5: "ignored"},
-		{CueName: "act", Nature: "action", Status: cue.StatusChanged, LocalMD5: "ignored"},
-		{CueName: "rnd", Nature: "render", Status: cue.StatusChanged, LocalMD5: "ignored"},
-		{CueName: "eq", Nature: "binary", Status: cue.StatusEqual, LocalMD5: "skipped"},
+		{CueName: "bin", Nature: "binary", Status: cue.StatusChanged, LocalHash: "aabbcc"},
+		{CueName: "cfg", Nature: "config", Status: cue.StatusChanged, LocalHash: "ddeeff"},
+		{CueName: "sec", Nature: "secret", Status: cue.StatusChanged, LocalHash: "112233"},
+		{CueName: "svc", Nature: "service", Status: cue.StatusChanged, LocalHash: "ignored"},
+		{CueName: "act", Nature: "action", Status: cue.StatusChanged, LocalHash: "ignored"},
+		{CueName: "rnd", Nature: "render", Status: cue.StatusChanged, LocalHash: "ignored"},
+		{CueName: "eq", Nature: "binary", Status: cue.StatusEqual, LocalHash: "skipped"},
 	}
 	m := runner.BuildManifest("v20260101-120000", []string{"app"}, results, nil, "")
 
 	if m.Release != "v20260101-120000" {
 		t.Errorf("unexpected release: %s", m.Release)
 	}
-	if m.Checksums["bin"] != "aabbcc" {
-		t.Errorf("binary checksum missing or wrong: %v", m.Checksums)
+	if m.Hashes["bin"] != "aabbcc" {
+		t.Errorf("binary checksum missing or wrong: %v", m.Hashes)
 	}
-	if m.Checksums["cfg"] != "ddeeff" {
-		t.Errorf("config checksum missing or wrong: %v", m.Checksums)
+	if m.Hashes["cfg"] != "ddeeff" {
+		t.Errorf("config checksum missing or wrong: %v", m.Hashes)
 	}
-	if m.Checksums["sec"] != "112233" {
-		t.Errorf("secret checksum missing or wrong: %v", m.Checksums)
+	if m.Hashes["sec"] != "112233" {
+		t.Errorf("secret checksum missing or wrong: %v", m.Hashes)
 	}
 	// service, action, render — not tracked in checksums
 	for _, key := range []string{"svc", "act", "rnd"} {
-		if _, ok := m.Checksums[key]; ok {
+		if _, ok := m.Hashes[key]; ok {
 			t.Errorf("%s must not appear in checksums", key)
 		}
 	}
 	// equal cue — not tracked
-	if _, ok := m.Checksums["eq"]; ok {
+	if _, ok := m.Hashes["eq"]; ok {
 		t.Error("equal cue must not appear in checksums")
 	}
 }
 
-func TestBuildManifest_noChecksums_whenNoLocalMD5(t *testing.T) {
+func TestBuildManifest_noHashes_whenNoLocalHash(t *testing.T) {
 	results := []cue.Result{
-		{CueName: "bin", Nature: "binary", Status: cue.StatusChanged}, // no LocalMD5
+		{CueName: "bin", Nature: "binary", Status: cue.StatusChanged}, // no LocalHash
 	}
 	m := runner.BuildManifest("v1", []string{"s"}, results, nil, "")
-	if m.Checksums != nil {
-		t.Errorf("expected nil checksums when no LocalMD5, got %v", m.Checksums)
+	if m.Hashes != nil {
+		t.Errorf("expected nil checksums when no LocalHash, got %v", m.Hashes)
 	}
 }
 

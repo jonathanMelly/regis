@@ -24,7 +24,7 @@ type ReleaseManifest struct {
 	DeployedAt   time.Time                    `yaml:"deployed_at"`
 	DeployedBy   string                       `yaml:"deployed_by"`
 	Scenarios    []string                     `yaml:"scenarios"`
-	Checksums    map[string]string            `yaml:"checksums,omitempty"`
+	Hashes    map[string]string            `yaml:"hashes,omitempty"`
 	Artifacts    map[string]string            `yaml:"artifacts,omitempty"`    // cue name → remote path (for rollback)
 	CueArtifacts map[string]map[string]string `yaml:"cue_artifacts,omitempty"` // cue name → {snapshotKey → remote path}
 }
@@ -35,7 +35,7 @@ type manifestUploader interface {
 }
 
 // BuildManifest constructs a ReleaseManifest from deploy results and steps.
-// Checksums are populated for StatusChanged binary/config/secret cues that have LocalMD5.
+// Hashes are populated for StatusChanged binary/config/secret cues that have LocalHash.
 // Artifacts maps every binary/config/secret/render cue to its remote path (needed for rollback).
 func BuildManifest(releaseID string, scenarios []string, results []cue.Result, steps []Step, targetDir string) ReleaseManifest {
 	hostname, _ := os.Hostname()
@@ -52,8 +52,8 @@ func BuildManifest(releaseID string, scenarios []string, results []cue.Result, s
 		}
 		switch r.Nature {
 		case "binary", "config", "secret":
-			if r.LocalMD5 != "" {
-				checksums[r.CueName] = r.LocalMD5
+			if r.LocalHash != "" {
+				checksums[r.CueName] = r.LocalHash
 			}
 		}
 	}
@@ -141,7 +141,7 @@ func BuildManifest(releaseID string, scenarios []string, results []cue.Result, s
 		DeployedAt:   time.Now().UTC(),
 		DeployedBy:   deployedBy,
 		Scenarios:    scenarios,
-		Checksums:    checksums,
+		Hashes:    checksums,
 		Artifacts:    artifacts,
 		CueArtifacts: cueArtifacts,
 	}

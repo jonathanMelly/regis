@@ -121,7 +121,7 @@ func (e *PackExecutor) Execute(ctx context.Context, conn SSHConn, cr config.CueR
 		return r, nil
 	}
 
-	remoteDest := joinRemotePath(e.conn, target.Dir, strings.TrimRight(cr.Dest, "/"))
+	remoteDest := JoinRemotePath(e.conn, target.Dir, strings.TrimRight(cr.Dest, "/"))
 	sep := e.conn.PathSep()
 	dryRun := IsDryRun(ctx)
 	useSudo := cr.Sudo || target.Sudo
@@ -170,7 +170,7 @@ func (e *PackExecutor) Execute(ctx context.Context, conn SSHConn, cr config.CueR
 			if remoteMissing {
 				return "missing"
 			}
-			return truncateMD5(rmd5)
+			return truncateHash(rmd5)
 		}
 
 		var fileChanged bool
@@ -187,11 +187,11 @@ func (e *PackExecutor) Execute(ctx context.Context, conn SSHConn, cr config.CueR
 			}
 		case "auto":
 			if isBinaryContent(localData) || (!remoteMissing && isBinaryContent(remoteData)) {
-				lmd5 := localMD5bytes(localData)
-				rmd5 := localMD5bytes(remoteData)
+				lmd5 := localHashBytes(localData)
+				rmd5 := localHashBytes(remoteData)
 				fileChanged = remoteMissing || lmd5 != rmd5
 				if fileChanged {
-					fmt.Fprintf(&diffBuf, "binary %s  remote:%s  local:%s\n", rel, remoteLabel(rmd5), truncateMD5(lmd5))
+					fmt.Fprintf(&diffBuf, "binary %s  remote:%s  local:%s\n", rel, remoteLabel(rmd5), truncateHash(lmd5))
 				}
 			} else {
 				remoteStr := "remote:" + rel
@@ -205,11 +205,11 @@ func (e *PackExecutor) Execute(ctx context.Context, conn SSHConn, cr config.CueR
 				}
 			}
 		default: // "binary"
-			lmd5 := localMD5bytes(localData)
-			rmd5 := localMD5bytes(remoteData)
+			lmd5 := localHashBytes(localData)
+			rmd5 := localHashBytes(remoteData)
 			fileChanged = remoteMissing || lmd5 != rmd5
 			if fileChanged {
-				fmt.Fprintf(&diffBuf, "binary %s  remote:%s  local:%s\n", rel, remoteLabel(rmd5), truncateMD5(lmd5))
+				fmt.Fprintf(&diffBuf, "binary %s  remote:%s  local:%s\n", rel, remoteLabel(rmd5), truncateHash(lmd5))
 			}
 		}
 
