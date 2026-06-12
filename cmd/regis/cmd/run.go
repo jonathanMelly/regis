@@ -197,6 +197,19 @@ func newRunCommand(gf *GlobalFlags) *cobra.Command {
 				if gf.Debug {
 					ctx = cue.WithDebugWriter(ctx, os.Stderr)
 				}
+				ctx = cue.WithCueProgress(ctx, func(checked, total int) {
+					spinner.Update(fmt.Sprintf("checking %s... %d/%d", tgtName, checked, total))
+				})
+				ctx = cue.WithPreStep(ctx, func(scenario, cueName, desc string) {
+					label := desc
+					if label == "" {
+						label = scenario
+					}
+					spinner.Update(fmt.Sprintf("deploying %s... %s / %s", tgtName, label, cueName))
+				})
+				ctx = cue.WithFileProgress(ctx, func(cueName string, scanned, total int) {
+					spinner.Update(fmt.Sprintf("deploying %s... %s  %d/%d", tgtName, cueName, scanned, total))
+				})
 				spinner.Update(fmt.Sprintf("deploying %s...", tgtName))
 
 				onResult := func(r cue.Result) {
