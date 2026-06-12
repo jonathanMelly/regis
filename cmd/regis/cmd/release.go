@@ -5,13 +5,16 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
 	"git.disroot.org/jmy/regis/internal/config"
+	"git.disroot.org/jmy/regis/internal/cue"
 	"git.disroot.org/jmy/regis/internal/runner"
 	regssh "git.disroot.org/jmy/regis/internal/ssh"
 	"github.com/spf13/cobra"
@@ -365,6 +368,241 @@ func newReleaseCommand(gf *GlobalFlags) *cobra.Command {
 			})
 		},
 	})
+
+	// check — compare a manifest's recorded hashes against actual remote files.
+	rel.AddCommand(func() *cobra.Command {
+		var rebuild bool
+		var remove bool
+		c := &cobra.Command{
+			Use:   "check [id]",
+			Short: "compare a release manifest's hashes against actual remote files",
+			Long: `check downloads a manifest and compares its recorded hashes against the
+actual files currently on the target.
+
+No arg: checks the live manifest at <target.dir>/.regis-release.
+With id: checks a specific historical manifest from the release archive.
+
+  =  hash matches
+  ~  hash differs (drift or partial deploy)
+  ?  dest exists on target but not tracked in manifest
+  -  dest missing on target
+
+Flags:
+  --rebuild   hash all remote files and write a new accurate manifest (new release ID)
+  --remove    delete the live manifest from target (clean slate)`,
+			Args: cobra.MaximumNArgs(1),
+			RunE: func(cmd *cobra.Command, args []string) error {
+				if rebuild && remove {
+					return fmt.Errorf("--rebuild and --remove are mutually exclusive")
+				}
+				return withConn(gf, func(conn *regssh.Conn, tgt config.Target, cfg *config.Config) error {
+					// Load the manifest to check against.
+					var manifestData []byte
+					var manifestSrc string
+					if len(args) == 1 {
+						relDir := cfg.Release.Dir
+						if relDir == "" {
+							relDir = path.Join(tgt.Dir, ".regis-releases")
+						}
+						remotePath := fmt.Sprintf("%s/%s/.regis-release", relDir, args[0])
+						data, dlErr := conn.Download(remotePath)
+						if dlErr != nil {
+							return fmt.Errorf("download manifest for %s: %w", args[0], dlErr)
+						}
+						manifestData = data
+						manifestSrc = args[0]
+					} else {
+						data, dlErr := conn.Download(tgt.Dir + "/.regis-release")
+						if dlErr != nil {
+							fmt.Println("no live manifest found — target has not been deployed with regis")
+							return nil
+						}
+						manifestData = data
+						manifestSrc = "live"
+					}
+
+					var m runner.ReleaseManifest
+					if err := yaml.Unmarshal(manifestData, &m); err != nil {
+						return fmt.Errorf("parse manifest: %w", err)
+					}
+
+					fmt.Printf("manifest  %s [%s]  deployed %s by %s\n",
+						m.Release, manifestSrc,
+						m.DeployedAt.Format("2006-01-02 15:04:05 UTC"),
+						m.DeployedBy,
+					)
+
+					// Collect remote paths to check: from manifest artifacts + config cues.
+					type checkEntry struct {
+						cueName    string
+						remotePath string
+					}
+					var entries []checkEntry
+					seen := map[string]bool{}
+
+					for _, scName := range cfg.ScenarioNames {
+						sc := cfg.Scenarios[scName]
+						for _, cr := range sc.Cues {
+							if cr.ScenarioRef != "" || cr.Dest == "" {
+								continue
+							}
+							switch cr.Nature {
+							case "binary", "config", "secret", "render":
+								if seen[cr.Name] {
+									continue
+								}
+								seen[cr.Name] = true
+								entries = append(entries, checkEntry{
+									cueName:    cr.Name,
+									remotePath: resolveRemotePathFetch(cr.Dest, tgt.Dir),
+								})
+							}
+						}
+					}
+					// Also include manifest artifacts not covered by config (removed cues, etc.)
+					for cueName, remotePath := range m.Artifacts {
+						if seen[cueName] {
+							continue
+						}
+						seen[cueName] = true
+						entries = append(entries, checkEntry{cueName: cueName, remotePath: remotePath})
+					}
+
+					// Hash all remote paths in one bulk call.
+					remotePaths := make([]string, len(entries))
+					for i, e := range entries {
+						remotePaths[i] = e.remotePath
+					}
+					remoteHashes := cue.BulkHashRemote(conn, remotePaths)
+
+					fmt.Printf("checking %d cues...\n", len(entries))
+					fmt.Println(strings.Repeat("─", 60))
+
+					var nMatch, nDrift, nUntracked, nMissing int
+					// For rebuild: collect accurate hashes and artifact paths.
+					newHashes := make(map[string]string)
+					newArtifacts := make(map[string]string)
+					newCueArtifacts := make(map[string]map[string]string)
+
+					for _, e := range entries {
+						manifestHash := m.Hashes[e.cueName]
+						remoteHash, exists := remoteHashes[e.remotePath]
+
+						if e.remotePath != "" {
+							newArtifacts[e.cueName] = e.remotePath
+							newCueArtifacts[e.cueName] = map[string]string{e.cueName: e.remotePath}
+						}
+
+						switch {
+						case !exists:
+							fmt.Printf("  -  %-24s (missing on target)\n", e.cueName)
+							nMissing++
+						case manifestHash == "":
+							fmt.Printf("  ?  %-24s %s (not in manifest)\n", e.cueName, shortHash(remoteHash))
+							newHashes[e.cueName] = remoteHash
+							nUntracked++
+						case remoteHash == manifestHash:
+							fmt.Printf("  =  %-24s %s\n", e.cueName, shortHash(remoteHash))
+							newHashes[e.cueName] = remoteHash
+							nMatch++
+						default:
+							fmt.Printf("  ~  %-24s remote:%s  manifest:%s\n",
+								e.cueName, shortHash(remoteHash), shortHash(manifestHash))
+							newHashes[e.cueName] = remoteHash
+							nDrift++
+						}
+					}
+
+					fmt.Println(strings.Repeat("─", 60))
+					var parts []string
+					if nMatch > 0 {
+						parts = append(parts, fmt.Sprintf("%d match", nMatch))
+					}
+					if nDrift > 0 {
+						parts = append(parts, fmt.Sprintf("%d mismatch", nDrift))
+					}
+					if nUntracked > 0 {
+						parts = append(parts, fmt.Sprintf("%d untracked", nUntracked))
+					}
+					if nMissing > 0 {
+						parts = append(parts, fmt.Sprintf("%d missing", nMissing))
+					}
+					fmt.Println(strings.Join(parts, " · "))
+
+					isConsistent := nDrift == 0 && nUntracked == 0 && nMissing == 0
+					if !isConsistent && !rebuild && !remove {
+						fmt.Println("\nmanifest is stale — run with --rebuild to refresh or --remove to clear it")
+					}
+
+					if remove {
+						_, _, code, err := conn.Run("rm -f " + tgt.Dir + "/.regis-release")
+						if err != nil || code != 0 {
+							return fmt.Errorf("remove manifest failed (exit %d)", code)
+						}
+						fmt.Println("\nremoved live manifest")
+						return nil
+					}
+
+					if rebuild {
+						releaseID := runner.NewReleaseID()
+						hostname, _ := os.Hostname()
+						user := os.Getenv("USER")
+						if user == "" {
+							user = os.Getenv("USERNAME")
+						}
+						scenarios := cfg.ScenarioNames
+
+						if len(newHashes) == 0 {
+							newHashes = nil
+						}
+						if len(newArtifacts) == 0 {
+							newArtifacts = nil
+						}
+						if len(newCueArtifacts) == 0 {
+							newCueArtifacts = nil
+						}
+
+						rebuilt := runner.ReleaseManifest{
+							Release:      releaseID,
+							DeployedAt:   time.Now().UTC(),
+							DeployedBy:   user + "@" + hostname,
+							Scenarios:    scenarios,
+							Hashes:       newHashes,
+							Artifacts:    newArtifacts,
+							CueArtifacts: newCueArtifacts,
+						}
+
+						if err := runner.WriteManifest(conn, tgt.Dir, rebuilt, tgt.Sudo); err != nil {
+							return fmt.Errorf("write manifest: %w", err)
+						}
+						fmt.Printf("\nmanifest  %s\n", releaseID)
+
+						localDir := effectiveLocalDir(cfg)
+						raw, _ := yaml.Marshal(rebuilt)
+						runner.WriteSnapshot(localDir, releaseID, raw, nil)
+						fmt.Printf("snapshot  %s/%s\n", localDir, releaseID)
+
+						relDir := cfg.Release.Dir
+						if relDir == "" {
+							relDir = path.Join(tgt.Dir, ".regis-releases")
+						}
+						archiveCmd := fmt.Sprintf("mkdir -p %s && cp -rp %s/. %s/%s/",
+							relDir, tgt.Dir, relDir, releaseID)
+						if _, stderr, code, archErr := conn.Run(archiveCmd); archErr != nil || code != 0 {
+							fmt.Fprintf(os.Stderr, "warn: archive failed (exit %d): %s\n", code, stderr)
+						} else {
+							fmt.Printf("archive   %s/%s\n", relDir, releaseID)
+						}
+					}
+
+					return nil
+				})
+			},
+		}
+		c.Flags().BoolVar(&rebuild, "rebuild", false, "hash remote files and write a new accurate manifest")
+		c.Flags().BoolVar(&remove, "remove", false, "delete the live manifest from target")
+		return c
+	}())
 
 	return rel
 }
