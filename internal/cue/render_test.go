@@ -134,7 +134,7 @@ func TestRenderExecutor_single_dryrun_no_upload(t *testing.T) {
 	ex := cue.NewRenderExecutor(mock)
 	shell, ld := singleFileFixture(t, "new")
 	cr := config.CueRef{Name: "nginx", Nature: "render", Shell: shell, Dest: "gateway.conf", LocalDest: ld}
-	ctx := cue.WithDryRun(context.Background())
+	ctx := cue.WithCheckOnly(context.Background())
 	r, _ := ex.Execute(ctx, nil, cr, config.Target{Dir: "/opt/app"})
 	if r.Status != cue.StatusChanged {
 		t.Errorf("dry-run: want StatusChanged, got %v (err: %v)", r.Status, r.Err)
@@ -159,7 +159,7 @@ func TestRenderExecutor_single_diff_populated(t *testing.T) {
 	ex := cue.NewRenderExecutor(mock)
 	shell, ld := singleFileFixture(t, "new content")
 	cr := config.CueRef{Name: "nginx", Nature: "render", Shell: shell, Dest: "gateway.conf", LocalDest: ld}
-	ctx := cue.WithDryRun(context.Background())
+	ctx := cue.WithCheckOnly(context.Background())
 	r, _ := ex.Execute(ctx, nil, cr, config.Target{Dir: "/opt/app"})
 	if r.Diff == "" {
 		t.Errorf("changed single-file render: want non-empty Diff (status=%v err=%v)", r.Status, r.Err)
@@ -245,7 +245,7 @@ func TestRenderExecutor_folder_stdout_summary(t *testing.T) {
 	ex := cue.NewRenderExecutor(mock)
 	shell, ld := folderFixture(t, files)
 	cr := config.CueRef{Name: "frontend", Nature: "render", Shell: shell, Dest: "dist/", LocalDest: ld}
-	ctx := cue.WithDryRun(context.Background())
+	ctx := cue.WithCheckOnly(context.Background())
 	r, _ := ex.Execute(ctx, nil, cr, config.Target{Dir: "/opt/app"})
 	if r.Stdout == "" {
 		t.Errorf("folder render changed: want non-empty Stdout summary (status=%v err=%v)", r.Status, r.Err)
@@ -367,7 +367,7 @@ func TestRenderExecutor_nil_conn_param_no_panic(t *testing.T) {
 	ex := cue.NewRenderExecutor(mock) // conn stored in executor
 	shell, ld := singleFileFixture(t, "new")
 	cr := config.CueRef{Name: "render-nilconn", Nature: "render", Shell: shell, Dest: "out.conf", LocalDest: ld}
-	ctx := cue.WithDryRun(context.Background())
+	ctx := cue.WithCheckOnly(context.Background())
 
 	// Pass nil as conn — this is exactly what runner.Run does in dry-run (rdiff) mode.
 	// Must not panic; must use e.conn to download and compare.

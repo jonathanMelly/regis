@@ -24,7 +24,7 @@ type GenerateExecutor struct{}
 func NewGenerateExecutor() *GenerateExecutor { return &GenerateExecutor{} }
 
 // Execute runs the generator shell command locally and returns StatusEqual by default.
-// It always runs, even when the context carries the dry-run flag, so that config cues
+// It always runs, even in check-only (rdiff) mode, so that config cues
 // that follow it can compare against freshly produced output.
 func (e *GenerateExecutor) Execute(ctx context.Context, _ SSHConn, cr config.CueRef, _ config.Target) (Result, error) {
 	start := time.Now()

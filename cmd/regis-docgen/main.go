@@ -1263,9 +1263,7 @@ func buildCLISection(cobraDir string) string {
 
 	buf.WriteString("| `--target` | | target selector: name, comma-list, `all`, or glob |\n")
 
-	buf.WriteString("| `--dry-run` | `-n` | show what would happen without executing |\n")
-
-	buf.WriteString("| `--run-without-check` | | deploy without rdiff preview (CI/automation) |\n")
+	buf.WriteString("| `--run-without-check` | | skip Phase 1 rdiff and deploy directly (CI/automation) |\n")
 	buf.WriteString("| `--allow-dirty` | | allow rdiff and deploy with uncommitted changes |\n")
 	buf.WriteString("| `--no-git` | | allow rdiff and deploy without a git repository |\n")
 

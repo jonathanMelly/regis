@@ -22,7 +22,7 @@ func (m *mockExec) Execute(_ context.Context, _ cue.SSHConn, cr config.CueRef, _
 }
 
 // makeAllNaturesCfg builds a config covering all 7 natures.
-// In DryRun, local non-generate cues (action Local:true) are skipped by the runner,
+// In CheckOnly, local non-generate cues (action Local:true) are skipped by the runner,
 // so expected result count is 6 (generate + 4 remote from app + render from tasks).
 func makeAllNaturesCfg() (*config.Config, runner.Dispatch) {
 	cfg := &config.Config{
@@ -59,7 +59,7 @@ func TestRun_dryRun_allNatures(t *testing.T) {
 	tgt := cfg.Targets[0]
 
 	result, err := runner.Run(context.Background(), cfg, cfg.ScenarioNames, tgt,
-		runner.Options{DryRun: true}, dispatch, nil)
+		runner.Options{CheckOnly: true}, dispatch, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestRun_dryRun_onResultCallback(t *testing.T) {
 	tgt := cfg.Targets[0]
 	var seen []string
 	result, err := runner.Run(context.Background(), cfg, cfg.ScenarioNames, tgt,
-		runner.Options{DryRun: true}, dispatch, func(r cue.Result) {
+		runner.Options{CheckOnly: true}, dispatch, func(r cue.Result) {
 			seen = append(seen, r.CueName)
 		})
 	if err != nil {
@@ -103,7 +103,7 @@ func TestRun_natureFilter(t *testing.T) {
 	tgt := cfg.Targets[0]
 
 	result, err := runner.Run(context.Background(), cfg, cfg.ScenarioNames, tgt,
-		runner.Options{DryRun: true, NatureFilter: []string{"binary", "config"}},
+		runner.Options{CheckOnly: true, NatureFilter: []string{"binary", "config"}},
 		dispatch, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -118,7 +118,7 @@ func TestRun_natureFilter(t *testing.T) {
 	}
 }
 
-func TestRun_generateAlwaysRunsInDryRun(t *testing.T) {
+func TestRun_generateAlwaysRunsInCheckOnly(t *testing.T) {
 	cfg := &config.Config{
 		Targets: []config.Target{{Name: "prod", Host: "h", User: "u", Dir: "/opt"}},
 		Scenarios: map[string]config.Scenario{
@@ -135,7 +135,7 @@ func TestRun_generateAlwaysRunsInDryRun(t *testing.T) {
 		Binary:   &mockExec{"binary", cue.StatusEqual},
 	}
 	_, err := runner.Run(context.Background(), cfg, cfg.ScenarioNames, cfg.Targets[0],
-		runner.Options{DryRun: true}, dispatch, nil)
+		runner.Options{CheckOnly: true}, dispatch, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestRun_scopedCues_single(t *testing.T) {
 		Config: &mockExec{"config", cue.StatusEqual},
 	}
 	result, err := runner.Run(context.Background(), cfg, []string{"app"}, cfg.Targets[0],
-		runner.Options{DryRun: true, ScopedCues: map[string][]string{"app": {"bin"}}},
+		runner.Options{CheckOnly: true, ScopedCues: map[string][]string{"app": {"bin"}}},
 		dispatch, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -186,7 +186,7 @@ func TestRun_scopedCues_unknown_cue_errors(t *testing.T) {
 	}
 	dispatch := runner.Dispatch{Binary: &mockExec{"binary", cue.StatusEqual}}
 	_, err := runner.Run(context.Background(), cfg, []string{"app"}, cfg.Targets[0],
-		runner.Options{DryRun: true, ScopedCues: map[string][]string{"app": {"typo"}}},
+		runner.Options{CheckOnly: true, ScopedCues: map[string][]string{"app": {"typo"}}},
 		dispatch, nil)
 	if err == nil {
 		t.Fatal("expected error for unknown cue name")
@@ -217,7 +217,7 @@ func TestRun_scopedCues_unscoped_scenarios_run_fully(t *testing.T) {
 		Generate: &mockExec{"generate", cue.StatusEqual},
 	}
 	result, err := runner.Run(context.Background(), cfg, []string{"app", "tasks"}, cfg.Targets[0],
-		runner.Options{DryRun: true, ScopedCues: map[string][]string{"app": {"bin"}}},
+		runner.Options{CheckOnly: true, ScopedCues: map[string][]string{"app": {"bin"}}},
 		dispatch, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -252,7 +252,7 @@ func TestRun_scopedCues_drops_topo_deps(t *testing.T) {
 		Action: &mockExec{"action", cue.StatusChanged},
 	}
 	result, err := runner.Run(context.Background(), cfg, []string{"deploy"}, cfg.Targets[0],
-		runner.Options{DryRun: true, ScopedCues: map[string][]string{"deploy": {"act"}}},
+		runner.Options{CheckOnly: true, ScopedCues: map[string][]string{"deploy": {"act"}}},
 		dispatch, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -281,9 +281,9 @@ func TestRun_natureFilter_empty_runsAll(t *testing.T) {
 	tgt := cfg.Targets[0]
 
 	resultAll, _ := runner.Run(context.Background(), cfg, cfg.ScenarioNames, tgt,
-		runner.Options{DryRun: true}, dispatch, nil)
+		runner.Options{CheckOnly: true}, dispatch, nil)
 	resultFiltered, _ := runner.Run(context.Background(), cfg, cfg.ScenarioNames, tgt,
-		runner.Options{DryRun: true, NatureFilter: []string{}}, dispatch, nil)
+		runner.Options{CheckOnly: true, NatureFilter: []string{}}, dispatch, nil)
 	if len(resultAll.Results) != len(resultFiltered.Results) {
 		t.Errorf("empty filter should run all: got %d vs %d",
 			len(resultAll.Results), len(resultFiltered.Results))
@@ -314,7 +314,7 @@ func TestRun_scenarioRef_expands(t *testing.T) {
 		Action: &mockExec{"action", cue.StatusEqual},
 	}
 	_, err := runner.Run(context.Background(), cfg, []string{"deploy"}, cfg.Targets[0],
-		runner.Options{DryRun: true}, dispatch, func(r cue.Result) {
+		runner.Options{CheckOnly: true}, dispatch, func(r cue.Result) {
 			seen = append(seen, r.CueName)
 		})
 	if err != nil {
@@ -352,7 +352,7 @@ func TestRun_scenarioRef_narrowCue(t *testing.T) {
 		Config: &mockExec{"config", cue.StatusEqual},
 	}
 	_, err := runner.Run(context.Background(), cfg, []string{"deploy"}, cfg.Targets[0],
-		runner.Options{DryRun: true}, dispatch, func(r cue.Result) {
+		runner.Options{CheckOnly: true}, dispatch, func(r cue.Result) {
 			seen = append(seen, r.CueName)
 		})
 	if err != nil {
@@ -386,7 +386,7 @@ func TestRun_scenarioRef_orderPreserved(t *testing.T) {
 		Action: &mockExec{"action", cue.StatusEqual},
 	}
 	_, err := runner.Run(context.Background(), cfg, []string{"deploy"}, cfg.Targets[0],
-		runner.Options{DryRun: true}, dispatch, func(r cue.Result) {
+		runner.Options{CheckOnly: true}, dispatch, func(r cue.Result) {
 			seen = append(seen, r.CueName)
 		})
 	if err != nil {
@@ -458,13 +458,13 @@ func runDedupCfg(t *testing.T, opts runner.Options) []string {
 
 func TestRun_deduplicateSteps_removesExpansionDuplicates(t *testing.T) {
 	// Without dedup: c1, c2 (from base) + c1, c2, c3, act1 (from combo) = 6 steps.
-	without := runDedupCfg(t, runner.Options{DryRun: true})
+	without := runDedupCfg(t, runner.Options{CheckOnly: true})
 	if len(without) != 6 {
 		t.Fatalf("without dedup: want 6 steps, got %d: %v", len(without), without)
 	}
 
 	// With dedup: c1, c2 (first seen in base) + c3, act1 (combo-only) = 4 steps.
-	with := runDedupCfg(t, runner.Options{DryRun: true, DeduplicateSteps: true})
+	with := runDedupCfg(t, runner.Options{CheckOnly: true, DeduplicateSteps: true})
 	want := []string{"c1", "c2", "c3", "act1"}
 	if len(with) != len(want) {
 		t.Fatalf("with dedup: want %v, got %v", want, with)
@@ -481,7 +481,7 @@ func TestRun_scenarioFilter_keepsOnlyMatchingScenario(t *testing.T) {
 	// After dedup the steps are: (base,c1), (base,c2), (combo,c3), (combo,act1).
 	// Filter retains the two base steps.
 	seen := runDedupCfg(t, runner.Options{
-		DryRun:           true,
+		CheckOnly:        true,
 		DeduplicateSteps: true,
 		ScenarioFilter:   []string{"base"},
 	})
@@ -499,7 +499,7 @@ func TestRun_scenarioFilter_keepsOnlyMatchingScenario(t *testing.T) {
 func TestRun_cueFilter_keepsOnlyMatchingCueName(t *testing.T) {
 	// CueFilter: ["c3", "act1"] — keep only steps whose Name is c3 or act1.
 	seen := runDedupCfg(t, runner.Options{
-		DryRun:           true,
+		CheckOnly:        true,
 		DeduplicateSteps: true,
 		CueFilter:        []string{"c3", "act1"},
 	})
@@ -517,7 +517,7 @@ func TestRun_cueFilter_keepsOnlyMatchingCueName(t *testing.T) {
 func TestRun_mixedFilter_scenarioORcueName(t *testing.T) {
 	// ScenarioFilter: ["base"] + CueFilter: ["act1"] — union: base's steps + act1.
 	seen := runDedupCfg(t, runner.Options{
-		DryRun:           true,
+		CheckOnly:        true,
 		DeduplicateSteps: true,
 		ScenarioFilter:   []string{"base"},
 		CueFilter:        []string{"act1"},

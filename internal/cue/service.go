@@ -66,7 +66,7 @@ func (e *ServiceExecutor) Execute(ctx context.Context, _ SSHConn, cr config.CueR
 
 	r.Diff = diff
 
-	if IsDryRun(ctx) {
+	if IsCheckOnly(ctx) {
 		r.Status = StatusChanged
 		r.Elapsed = time.Since(start)
 		return r, nil

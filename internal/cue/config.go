@@ -108,7 +108,7 @@ func (e *ConfigExecutor) executeSingle(ctx context.Context, cr config.CueRef, ta
 
 	r.Diff = diff
 
-	if IsDryRun(ctx) {
+	if IsCheckOnly(ctx) {
 		r.Status = StatusChanged
 		r.Elapsed = time.Since(start)
 		return r, nil
@@ -144,7 +144,7 @@ func (e *ConfigExecutor) executeMulti(ctx context.Context, cr config.CueRef, tar
 		sep = e.conn.PathSep()
 	}
 	useSudo := cr.Sudo || target.Sudo
-	dryRun := IsDryRun(ctx)
+	checkOnly := IsCheckOnly(ctx)
 	anyChanged := false
 	var changedCount int
 	var totalSize int64
@@ -194,7 +194,7 @@ func (e *ConfigExecutor) executeMulti(ctx context.Context, cr config.CueRef, tar
 		changedCount++
 		diffBuf.WriteString(diff)
 
-		if dryRun {
+		if checkOnly {
 			continue
 		}
 
@@ -236,7 +236,7 @@ func (e *ConfigExecutor) executeMulti(ctx context.Context, cr config.CueRef, tar
 	r.FileTotal = len(srcs)
 	r.FileChanged = changedCount
 	r.Elapsed = time.Since(start)
-	if !dryRun && cr.Post.Cmd != "" {
+	if !checkOnly && cr.Post.Cmd != "" {
 		r.PostActions = []PostAction{{Cmd: cr.Post.Cmd, Sudo: cr.Post.Sudo || target.Sudo}}
 	}
 	return r, nil

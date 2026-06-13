@@ -21,9 +21,8 @@ import (
 
 var reservedNames = map[string]bool{
 	"config": true, "init": true, "score": true, "show": true,
-	"fetch": true, "rdiff": true, "status": true, "release": true,
-	"releases": true, "service": true, "ssh": true, "exec": true,
-	"env": true, "ai": true,
+	"fetch": true, "release": true, "releases": true, "service": true,
+	"ssh": true, "exec": true, "env": true, "ai": true,
 }
 
 // populateRemoteFiles runs a single find on the target and stores the file set
@@ -280,7 +279,6 @@ func newRunCommand(gf *GlobalFlags) *cobra.Command {
 				baseCtx, minfo := buildBaseCtx(gf, conn, tgt, cfg)
 
 				runOpts := runner.Options{
-					DryRun:        gf.DryRun,
 					SkipConfirm:   gf.RunWithoutCheck,
 					NatureFilter:  ParseNatureFilter(nature),
 					PruneReleases: pruneReleases,
@@ -290,21 +288,38 @@ func newRunCommand(gf *GlobalFlags) *cobra.Command {
 					NoGit:         gf.NoGit,
 				}
 
-				// Level2: live TUI with browse after deploy.
+				runFn := func(liveCtx context.Context) ([]cue.Result, time.Duration, error) {
+					res, runErr := runner.Run(liveCtx, cfg, scenarioNames, tgt, runOpts, dispatch, func(cue.Result) {})
+					if res == nil {
+						return nil, 0, runErr
+					}
+					for _, w := range res.SystemWarnings {
+						fmt.Fprintf(os.Stderr, "\nwarn: %s\n", w)
+					}
+					return res.Results, res.Elapsed, runErr
+				}
+
+				var phase1Fn, phase2Fn func(context.Context) ([]cue.Result, time.Duration, error)
+				if gf.RunWithoutCheck {
+					phase1Fn = runFn
+				} else {
+					checkOpts := runOpts
+					checkOpts.CheckOnly = true
+					phase1Fn = func(liveCtx context.Context) ([]cue.Result, time.Duration, error) {
+						res, runErr := runner.Run(liveCtx, cfg, scenarioNames, tgt, checkOpts, dispatch, func(cue.Result) {})
+						if res == nil {
+							return nil, 0, runErr
+						}
+						return res.Results, res.Elapsed, runErr
+					}
+					phase2Fn = runFn
+				}
+
+				// Level2: TUI.
 				if level >= output.Level2 {
 					spinner.Stop()
 					tuiErr := tui.RunLiveTUI(baseCtx, tgtName, true, gf.Verbose, level, minfo,
-						func(liveCtx context.Context) ([]cue.Result, time.Duration, error) {
-							res, runErr := runner.Run(liveCtx, cfg, scenarioNames, tgt, runOpts, dispatch, func(cue.Result) {})
-							if res == nil {
-								return nil, 0, runErr
-							}
-							for _, w := range res.SystemWarnings {
-								fmt.Fprintf(os.Stderr, "\nwarn: %s\n", w)
-							}
-							return res.Results, res.Elapsed, runErr
-						},
-					)
+						phase1Fn, phase2Fn)
 					if rawConn != nil {
 						rawConn.Close()
 					}
@@ -314,21 +329,39 @@ func newRunCommand(gf *GlobalFlags) *cobra.Command {
 					continue
 				}
 
-				// Level1: plain text — run silently, print expand-all tree.
+				// Level1: plain text output. Phase 1 (check), then optionally phase 2 (run).
 				spinner.Stop()
-				result, err := runner.Run(baseCtx, cfg, scenarioNames, tgt, runOpts, dispatch, func(cue.Result) {})
-				if rawConn != nil {
-					rawConn.Close()
-				}
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "FAILED  %s: %v\n", tgtName, err)
+				results, elapsed, runErr := phase1Fn(baseCtx)
+				if runErr != nil {
+					if rawConn != nil {
+						rawConn.Close()
+					}
+					fmt.Fprintf(os.Stderr, "FAILED  %s: %v\n", tgtName, runErr)
 					os.Exit(1)
 				}
-				if result != nil {
-					for _, w := range result.SystemWarnings {
-						fmt.Fprintf(os.Stderr, "warn: %s\n", w)
+				fmt.Print(output.RenderTree(results, tgtName, elapsed, true, gf.Verbose, level, minfo))
+				if phase2Fn != nil {
+					fmt.Printf("run? [r to proceed, anything else to cancel]: ")
+					var ans string
+					fmt.Scan(&ans)
+					if strings.ToLower(strings.TrimSpace(ans)) != "r" {
+						if rawConn != nil {
+							rawConn.Close()
+						}
+						continue
 					}
-					fmt.Print(output.RenderTree(result.Results, tgtName, result.Elapsed, true, gf.Verbose, level, minfo))
+					results, elapsed, runErr = phase2Fn(baseCtx)
+					if runErr != nil {
+						if rawConn != nil {
+							rawConn.Close()
+						}
+						fmt.Fprintf(os.Stderr, "FAILED  %s: %v\n", tgtName, runErr)
+						os.Exit(1)
+					}
+					fmt.Print(output.RenderTree(results, tgtName, elapsed, true, gf.Verbose, level, minfo))
+				}
+				if rawConn != nil {
+					rawConn.Close()
 				}
 			}
 			return nil

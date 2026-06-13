@@ -33,8 +33,8 @@ func (e *ActionExecutor) Execute(ctx context.Context, _ SSHConn, cr config.CueRe
 		Cmd:            cr.Shell,
 	}
 
-	// Dry-run: skip execution — action outcome cannot be predicted without running
-	if !cr.Local && IsDryRun(ctx) {
+	// Check-only (rdiff): skip execution — action outcome cannot be predicted without running
+	if !cr.Local && IsCheckOnly(ctx) {
 		r.Status = StatusSkipped
 		r.Elapsed = time.Since(start)
 		return r, nil

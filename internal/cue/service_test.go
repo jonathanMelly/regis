@@ -44,7 +44,7 @@ func TestServiceExecutor_systemd_noFile_enabled(t *testing.T) {
 func TestServiceExecutor_systemd_noFile_notEnabled(t *testing.T) {
 	mock := &mockConn{runFunc: runCode(1)} // is-enabled exits 1
 	r, err := cue.NewServiceExecutor(mock).Execute(
-		cue.WithDryRun(context.Background()), nil,
+		cue.WithCheckOnly(context.Background()), nil,
 		config.CueRef{Name: "mailway", Nature: "service", Manager: "systemd"},
 		config.Target{Dir: "/opt/app"},
 	)
@@ -63,7 +63,7 @@ func TestServiceExecutor_systemd_noFile_notEnabled_isEnabledCommand(t *testing.T
 	var cmds []string
 	mock := &mockConn{runFunc: runCapture(&cmds, 1)}
 	cue.NewServiceExecutor(mock).Execute( //nolint
-		cue.WithDryRun(context.Background()), nil,
+		cue.WithCheckOnly(context.Background()), nil,
 		config.CueRef{Name: "mailway", Nature: "service", Manager: "systemd"},
 		config.Target{Dir: "/opt/app"},
 	)
@@ -149,7 +149,7 @@ func TestServiceExecutor_systemd_fileUnchanged_notEnabled(t *testing.T) {
 		},
 	}
 	r, err := cue.NewServiceExecutor(mock).Execute(
-		cue.WithDryRun(context.Background()), nil,
+		cue.WithCheckOnly(context.Background()), nil,
 		config.CueRef{Name: "mailway", Nature: "service", Manager: "systemd", ServiceFile: localPath},
 		config.Target{Dir: "/opt/app"},
 	)
@@ -173,7 +173,7 @@ func TestServiceExecutor_systemd_dryRun_noUpload(t *testing.T) {
 		},
 	}
 	r, err := cue.NewServiceExecutor(mock).Execute(
-		cue.WithDryRun(context.Background()), nil,
+		cue.WithCheckOnly(context.Background()), nil,
 		config.CueRef{Name: "mailway", Nature: "service", Manager: "systemd", ServiceFile: localPath},
 		config.Target{Dir: "/opt/app"},
 	)
@@ -227,7 +227,7 @@ func TestServiceExecutor_crontab_installed(t *testing.T) {
 func TestServiceExecutor_crontab_notInstalled_dryRun(t *testing.T) {
 	mock := &mockConn{runFunc: runCode(1)} // grep returns 1 (not found)
 	r, err := cue.NewServiceExecutor(mock).Execute(
-		cue.WithDryRun(context.Background()), nil,
+		cue.WithCheckOnly(context.Background()), nil,
 		config.CueRef{Name: "saver", Nature: "service", Manager: "crontab", Binary: "saver"},
 		config.Target{Dir: "/opt/app"},
 	)
@@ -336,7 +336,7 @@ func TestServiceExecutor_diffHeaders_fullPaths(t *testing.T) {
 		downloads: map[string][]byte{"/etc/systemd/system/svc.service": []byte("ExecStart=/opt/app/old\n")},
 	}
 	r, err := cue.NewServiceExecutor(mock).Execute(
-		cue.WithDryRun(context.Background()), nil,
+		cue.WithCheckOnly(context.Background()), nil,
 		config.CueRef{Name: "svc", Nature: "service", Manager: "systemd", ServiceFile: localPath},
 		config.Target{Dir: "/opt/app"},
 	)

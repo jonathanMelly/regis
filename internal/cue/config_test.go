@@ -215,7 +215,7 @@ func TestConfigExecutor_multiSrc_dryRun(t *testing.T) {
 		Dest:   "/etc/nginx/conf.d/",
 		Post:   config.PostAction{Cmd: "nginx -s reload"},
 	}
-	ctx := cue.WithDryRun(context.Background())
+	ctx := cue.WithCheckOnly(context.Background())
 	result, err := ex.Execute(ctx, nil, cr, config.Target{Dir: "/opt/app"})
 	if err != nil {
 		t.Fatal(err)

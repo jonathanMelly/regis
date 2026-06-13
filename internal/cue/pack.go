@@ -124,7 +124,7 @@ func (e *PackExecutor) Execute(ctx context.Context, conn SSHConn, cr config.CueR
 
 	remoteDest := JoinRemotePath(e.conn, target.Dir, strings.TrimRight(cr.Dest, "/"))
 	sep := e.conn.PathSep()
-	dryRun := IsDryRun(ctx)
+	checkOnly := IsCheckOnly(ctx)
 	useSudo := cr.Sudo || target.Sudo
 
 	diffMode := cr.DiffMode
@@ -301,7 +301,7 @@ func (e *PackExecutor) Execute(ctx context.Context, conn SSHConn, cr config.CueR
 		}
 		changedNames = append(changedNames, rel)
 
-		if dryRun {
+		if checkOnly {
 			continue
 		}
 
@@ -331,7 +331,7 @@ func (e *PackExecutor) Execute(ctx context.Context, conn SSHConn, cr config.CueR
 
 	// Always write the managed-file manifest after a successful non-dry-run deploy so
 	// tier-1 prune is available on the next run regardless of whether prune: true today.
-	if !dryRun {
+	if !checkOnly {
 		if err := e.writePackManifest(remoteDest, sep, cr.Name, localRelPaths, useSudo); err != nil {
 			r.Warnings = append(r.Warnings,
 				fmt.Sprintf("managed manifest write failed — next deploy will fall back to heuristic pruning: %v", err))
@@ -344,7 +344,7 @@ func (e *PackExecutor) Execute(ctx context.Context, conn SSHConn, cr config.CueR
 		affected bool // true if files were actually deleted (drives AffectsState)
 	}
 	var pr pruneResult
-	if packPruneEnabled(cr) && !dryRun {
+	if packPruneEnabled(cr) && !checkOnly {
 		report, affected := e.runPrune(cr, target, remoteDest, sep, localRelPaths, useSudo)
 		pr = pruneResult{report: report, affected: affected}
 	}
@@ -421,7 +421,7 @@ func (e *PackExecutor) Execute(ctx context.Context, conn SSHConn, cr config.CueR
 	}
 	r.Stdout = strings.TrimRight(summary.String(), "\n")
 
-	if !dryRun && cr.Post.Cmd != "" {
+	if !checkOnly && cr.Post.Cmd != "" {
 		r.PostActions = []PostAction{{Cmd: cr.Post.Cmd, Sudo: cr.Post.Sudo || target.Sudo}}
 	}
 

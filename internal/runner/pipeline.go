@@ -107,13 +107,13 @@ type execFn = func(ctx context.Context, conn cue.SSHConn, cr config.CueRef, targ
 // and are CPU-bound rather than network-bound.
 //
 // Remote phases use a two-stage approach:
-//  1. Parallel dry-run pre-check: all steps run concurrently over the shared SSH
+//  1. Parallel check-only pre-check: all steps run concurrently over the shared SSH
 //     connection to determine their current status (MD5 compare, file diff, etc.).
 //  2. Sequential apply: only steps that are not StatusEqual are executed in order.
-//     Actions always appear as StatusSkipped in dry-run and are always applied.
+//     Actions always appear as StatusSkipped in check-only and are always applied.
 //
-// When ctx already carries the dry-run flag (e.g. rdiff), stage 1 results are
-// returned directly — no apply stage runs.
+// When ctx already carries the check-only flag (runner.CheckOnly=true), stage 1 results
+// are returned directly — no apply stage runs.
 func ExecutePhase(
 	ctx context.Context,
 	phase Phase,
@@ -171,10 +171,10 @@ func executeRemote(
 		return nil, nil
 	}
 
-	// Stage 1: pre-check with dry-run context.
+	// Stage 1: pre-check with check-only context (rdiff — compare, no writes).
 	// Normally runs in parallel (gossh.Client.NewSession is goroutine-safe).
 	// In debug mode, runs sequentially so per-step headers and SSH traces are readable.
-	checkCtx := cue.WithDryRun(ctx)
+	checkCtx := cue.WithCheckOnly(ctx)
 	type checkItem struct {
 		result cue.Result
 		err    error
@@ -226,9 +226,9 @@ func executeRemote(
 		wg.Wait()
 	}
 
-	// If the caller already requested dry-run (e.g. rdiff), the pre-check results
-	// are the final results — no apply stage needed.
-	if cue.IsDryRun(ctx) {
+	// If the caller requested check-only (rdiff mode), the pre-check results
+	// are the final results — no apply stage runs.
+	if cue.IsCheckOnly(ctx) {
 		results := make([]cue.Result, len(steps))
 		for i, c := range checks {
 			results[i] = c.result

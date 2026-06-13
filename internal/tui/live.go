@@ -47,9 +47,10 @@ type liveFileProgressMsg struct {
 	scanned, total int
 }
 type liveRunCompleteMsg struct {
-	results []cue.Result
-	elapsed time.Duration
-	err     error
+	results   []cue.Result
+	elapsed   time.Duration
+	err       error
+	confirmCh chan bool // non-nil after phase-1 check: TUI waits for user to press 'r'
 }
 type liveTickMsg struct{}
 
@@ -128,6 +129,10 @@ type rdiffModel struct {
 	liveEntries []liveEntry
 	spinFrame   int
 	startedAt   time.Time
+
+	// deploy gate (isRun=true, two-phase)
+	confirmCh chan bool // non-nil when waiting for user to press 'r' before deploying
+	confirming bool    // true when showing the "run? [y/N]" confirmation line
 }
 
 func (m rdiffModel) Init() tea.Cmd {
@@ -180,6 +185,12 @@ func (m rdiffModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case liveRunCompleteMsg:
 		if len(msg.results) == 0 {
 			m.checking = false
+			if msg.confirmCh != nil {
+				select {
+				case msg.confirmCh <- false:
+				default:
+				}
+			}
 			return m, nil
 		}
 		newM := newLiveModel(msg.results, m.target, msg.elapsed, m.verbose, m.minfo, m.isRun)
@@ -190,6 +201,7 @@ func (m rdiffModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		newM.width = m.width
 		newM.height = m.height
 		newM.startedAt = m.startedAt
+		newM.confirmCh = msg.confirmCh
 		return newM, nil
 
 	case liveTickMsg:
@@ -206,6 +218,9 @@ func (m rdiffModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			}
 			return m, nil
+		}
+		if m.confirming {
+			return m.updateConfirm(msg)
 		}
 		if m.searchMode {
 			return m.updateSearch(msg)
@@ -421,6 +436,8 @@ func (m rdiffModel) viewBrowse() string {
 
 	if m.searchMode {
 		fmt.Fprintf(&sb, "\n/ %s█\n", m.searchQuery)
+	} else if m.confirming {
+		fmt.Fprintf(&sb, "\nrun? [y/N]\n")
 	} else {
 		var skippedHint string
 		if m.hideSkipped {
@@ -433,7 +450,11 @@ func (m rdiffModel) viewBrowse() string {
 		} else {
 			skippedHint = "  h hide-skipped"
 		}
-		fmt.Fprintf(&sb, "\n↑↓ navigate  →← tab/collapse  +/- all  / search%s  q quit\n", skippedHint)
+		var runHint string
+		if m.confirmCh != nil {
+			runHint = "  r run"
+		}
+		fmt.Fprintf(&sb, "\n↑↓ navigate  →← tab/collapse  +/- all  / search%s%s  q quit\n", skippedHint, runHint)
 	}
 	return sb.String()
 }
@@ -802,6 +823,33 @@ func (m rdiffModel) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// updateConfirm handles keypresses while the "run? [y/N]" prompt is shown.
+func (m rdiffModel) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case msg.String() == "y" || msg.String() == "Y":
+		select {
+		case m.confirmCh <- true:
+		default:
+		}
+		m.confirmCh = nil
+		m.confirming = false
+		m.checking = true
+		m.liveEntries = nil
+		m.startedAt = time.Now()
+		return m, liveTick()
+	case msg.Type == tea.KeyCtrlC:
+		select {
+		case m.confirmCh <- false:
+		default:
+		}
+		m.quitting = true
+		return m, tea.Quit
+	default: // Enter, n, N, Escape, any other key → cancel
+		m.confirming = false
+		return m, nil
+	}
+}
+
 func (m rdiffModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyUp:
@@ -827,6 +875,12 @@ func (m rdiffModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyShiftTab:
 		m = m.jumpPrevScenario()
 	case tea.KeyCtrlC:
+		if m.confirmCh != nil {
+			select {
+			case m.confirmCh <- false:
+			default:
+			}
+		}
 		m.quitting = true
 		return m, tea.Quit
 	case tea.KeyRunes:
@@ -850,7 +904,17 @@ func (m rdiffModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "/":
 			m.searchMode = true
 			m.searchQuery = ""
+		case "r":
+			if m.confirmCh != nil {
+				m.confirming = true
+			}
 		case "q":
+			if m.confirmCh != nil {
+				select {
+				case m.confirmCh <- false:
+				default:
+				}
+			}
 			m.quitting = true
 			return m, tea.Quit
 		}
@@ -1051,8 +1115,14 @@ func rdiffClamp(v, lo, hi int) int {
 
 // ── entry points ──────────────────────────────────────────────────────────────
 
-// RunLiveTUI launches a live TUI immediately, transitions to browse after completion.
-// isRun=false → rdiff mode; isRun=true → run/deploy mode.
+// RunLiveTUI launches a live TUI that runs phase1Fn immediately, then transitions to
+// browse mode. If phase2Fn is non-nil the browse footer shows "r run"; pressing 'r'
+// triggers a confirmation then runs phase2Fn (also showing a live view).
+//
+// Typical usage:
+//   - rdiff:              phase1Fn=check, phase2Fn=nil
+//   - run (normal):       phase1Fn=check, phase2Fn=run
+//   - run --run-without-check: phase1Fn=run,   phase2Fn=nil  (skip rdiff phase entirely)
 func RunLiveTUI(
 	ctx context.Context,
 	target string,
@@ -1060,9 +1130,23 @@ func RunLiveTUI(
 	verbose bool,
 	level output.Level,
 	minfo *output.ManifestInfo,
-	runFn func(ctx context.Context) ([]cue.Result, time.Duration, error),
+	phase1Fn func(ctx context.Context) ([]cue.Result, time.Duration, error),
+	phase2Fn func(ctx context.Context) ([]cue.Result, time.Duration, error),
 ) error {
-	m := rdiffModel{target: target, verbose: verbose, minfo: minfo, isRun: isRun, width: 80, height: 24}
+	var confirmCh chan bool
+	if phase2Fn != nil {
+		confirmCh = make(chan bool, 1)
+	}
+
+	m := rdiffModel{
+		target:    target,
+		verbose:   verbose,
+		minfo:     minfo,
+		isRun:     isRun,
+		width:     80,
+		height:    24,
+		confirmCh: confirmCh,
+	}
 	prog := tea.NewProgram(m, tea.WithAltScreen())
 
 	ctx = cue.WithPrePhase(ctx, func(steps []cue.StepInfo) {
@@ -1082,12 +1166,43 @@ func RunLiveTUI(
 	}
 	ch := make(chan runResult, 1)
 	go func() {
-		results, elapsed, err := runFn(ctx)
-		prog.Send(liveRunCompleteMsg{results: results, elapsed: elapsed, err: err})
-		ch <- runResult{results, elapsed, err}
+		// Phase 1.
+		results, elapsed, err := phase1Fn(ctx)
+
+		var msgConfirmCh chan bool
+		if phase2Fn != nil && err == nil {
+			msgConfirmCh = confirmCh
+		}
+		prog.Send(liveRunCompleteMsg{results: results, elapsed: elapsed, err: err, confirmCh: msgConfirmCh})
+
+		if phase2Fn == nil {
+			ch <- runResult{results, elapsed, err}
+			return
+		}
+
+		// Wait for user to press 'r' (true) or quit (false).
+		if confirmed := <-confirmCh; !confirmed {
+			ch <- runResult{results, elapsed, nil}
+			return
+		}
+
+		// Phase 2. Reuses ctx with live callbacks so the runner's internal pre-check
+		// fires livePrePhaseMsg/liveCheckResultMsg again for a fresh live view.
+		r2, e2, err2 := phase2Fn(ctx)
+		prog.Send(liveRunCompleteMsg{results: r2, elapsed: e2, err: err2, confirmCh: nil})
+		ch <- runResult{r2, e2, err2}
 	}()
 
 	_, tuiErr := prog.Run()
+
+	// If the TUI exited before the user confirmed, unblock the goroutine.
+	if confirmCh != nil {
+		select {
+		case confirmCh <- false:
+		default:
+		}
+	}
+
 	rr := <-ch
 
 	if tuiErr != nil {
@@ -1099,26 +1214,3 @@ func RunLiveTUI(
 	return rr.err
 }
 
-// RunRdiffTUI runs the interactive browse TUI for rdiff (post-check, no live phase).
-func RunRdiffTUI(results []cue.Result, target string, total time.Duration, verbose bool, level output.Level, minfo *output.ManifestInfo) error {
-	m := newLiveModel(results, target, total, verbose, minfo, false)
-	p := tea.NewProgram(m, tea.WithAltScreen())
-	_, err := p.Run()
-	if err != nil {
-		return err
-	}
-	fmt.Print(output.RenderTree(results, target, total, true, verbose, level, minfo))
-	return nil
-}
-
-// RunLiveRdiffTUI is kept for backwards compatibility; calls RunLiveTUI with isRun=false.
-func RunLiveRdiffTUI(
-	ctx context.Context,
-	target string,
-	verbose bool,
-	level output.Level,
-	minfo *output.ManifestInfo,
-	runFn func(ctx context.Context) ([]cue.Result, time.Duration, error),
-) error {
-	return RunLiveTUI(ctx, target, false, verbose, level, minfo, runFn)
-}

@@ -9,8 +9,8 @@ import (
 )
 
 func TestRunCommand_reservedNames(t *testing.T) {
-	reserved := []string{"config", "init", "score", "show", "fetch", "rdiff",
-		"status", "release", "releases", "service", "ssh", "exec"}
+	reserved := []string{"config", "init", "score", "show", "fetch",
+		"release", "releases", "service", "ssh", "exec"}
 	for _, name := range reserved {
 		if !cmd.IsReservedScenarioName(name) {
 			t.Errorf("expected %q to be reserved", name)

@@ -48,7 +48,7 @@ func TestGenerateExecutor_nature_field(t *testing.T) {
 func TestGenerateExecutor_runs_in_dryrun_context(t *testing.T) {
 	ex := cue.NewGenerateExecutor()
 	cr := config.CueRef{Name: "gen", Nature: "generate", Shell: "echo produced"}
-	ctx := cue.WithDryRun(context.Background())
+	ctx := cue.WithCheckOnly(context.Background())
 	r, err := ex.Execute(ctx, nil, cr, config.Target{})
 	if err != nil {
 		t.Fatal(err)

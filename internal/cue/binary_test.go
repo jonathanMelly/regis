@@ -170,12 +170,12 @@ func TestBinaryExecutor_updateMtime_prefetch(t *testing.T) {
 		},
 		{
 			name:      "dry-run without --update-mtime — no touch",
-			ctx:       cue.WithRemoteStats(cue.WithDryRun(context.Background()), stats),
+			ctx:       cue.WithRemoteStats(cue.WithCheckOnly(context.Background()), stats),
 			wantTouch: false,
 		},
 		{
 			name:      "dry-run with --update-mtime — touch expected",
-			ctx:       cue.WithRemoteStats(cue.WithUpdateMtime(cue.WithDryRun(context.Background())), stats),
+			ctx:       cue.WithRemoteStats(cue.WithUpdateMtime(cue.WithCheckOnly(context.Background())), stats),
 			wantTouch: true,
 		},
 	}
@@ -243,12 +243,12 @@ func TestBinaryExecutor_updateMtime_fallback(t *testing.T) {
 		},
 		{
 			name:      "dry-run without --update-mtime — no touch",
-			buildCtx:  func() context.Context { return cue.WithDryRun(context.Background()) },
+			buildCtx:  func() context.Context { return cue.WithCheckOnly(context.Background()) },
 			wantTouch: false,
 		},
 		{
 			name:      "dry-run with --update-mtime — touch expected",
-			buildCtx:  func() context.Context { return cue.WithUpdateMtime(cue.WithDryRun(context.Background())) },
+			buildCtx:  func() context.Context { return cue.WithUpdateMtime(cue.WithCheckOnly(context.Background())) },
 			wantTouch: true,
 		},
 	}

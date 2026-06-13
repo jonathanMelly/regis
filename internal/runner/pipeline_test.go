@@ -40,7 +40,7 @@ func TestExecutePhase_parallelPreCheck(t *testing.T) {
 		time.Sleep(10 * time.Millisecond) // simulate SSH round-trip
 		concurrency.Add(-1)
 
-		if cue.IsDryRun(ctx) {
+		if cue.IsCheckOnly(ctx) {
 			if cr.Name == "c" {
 				return cue.Result{CueName: cr.Name, Status: cue.StatusChanged}, nil
 			}

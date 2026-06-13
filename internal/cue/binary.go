@@ -93,7 +93,7 @@ func (e *BinaryExecutor) Execute(ctx context.Context, _ SSHConn, cr config.CueRe
 				return r, nil
 			}
 			if rs.Hash == localHash {
-				if (!IsDryRun(ctx) || IsUpdateMtime(ctx)) && !localMtime.IsZero() {
+				if (!IsCheckOnly(ctx) || IsUpdateMtime(ctx)) && !localMtime.IsZero() {
 					// Sync remote mtime so the next rdiff/run can skip the hash check via the fast mtime+size path.
 					SetRemoteMtime(e.conn, remotePath, localMtime)
 				}
@@ -138,7 +138,7 @@ func (e *BinaryExecutor) Execute(ctx context.Context, _ SSHConn, cr config.CueRe
 	if !fileKnownMissing {
 		remoteHash, err = HashRemote(e.conn, remotePath)
 		if err == nil && localHash == remoteHash {
-			if (!IsDryRun(ctx) || IsUpdateMtime(ctx)) && !localMtime.IsZero() {
+			if (!IsCheckOnly(ctx) || IsUpdateMtime(ctx)) && !localMtime.IsZero() {
 				// Sync remote mtime so the next rdiff/run can skip the hash check via the fast mtime+size path.
 				SetRemoteMtime(e.conn, remotePath, localMtime)
 			}
@@ -153,7 +153,7 @@ func (e *BinaryExecutor) Execute(ctx context.Context, _ SSHConn, cr config.CueRe
 	return e.applyOrChanged(ctx, cr, target, r, start, localPath, remotePath, localMtime, localHash, remoteHash)
 }
 
-// applyOrChanged sets manifest drift info and either uploads (real run) or returns StatusChanged (dry-run).
+// applyOrChanged sets manifest drift info and either uploads (real run) or returns StatusChanged (check-only).
 func (e *BinaryExecutor) applyOrChanged(
 	ctx context.Context, cr config.CueRef, target config.Target, r Result,
 	start time.Time, localPath, remotePath string, localMtime time.Time,
@@ -171,7 +171,7 @@ func (e *BinaryExecutor) applyOrChanged(
 		}
 	}
 
-	if IsDryRun(ctx) {
+	if IsCheckOnly(ctx) {
 		r.Status = StatusChanged
 		r.Elapsed = time.Since(start)
 		return r, nil

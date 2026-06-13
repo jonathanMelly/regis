@@ -76,7 +76,7 @@ func (e *SecretExecutor) Execute(ctx context.Context, conn SSHConn, cr config.Cu
 	}
 
 	// Dry-run: diff computed, skip upload
-	if IsDryRun(ctx) {
+	if IsCheckOnly(ctx) {
 		r.Status = StatusChanged
 		r.Elapsed = time.Since(start)
 		return r, nil

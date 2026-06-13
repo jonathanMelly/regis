@@ -331,7 +331,7 @@ func TestPackExecutor_dryRunSkipsUploadAndPrune(t *testing.T) {
 		Dest:   "/www",
 		Prune:  boolPtr(true),
 	}
-	ctx := cue.WithDryRun(context.Background())
+	ctx := cue.WithCheckOnly(context.Background())
 	r, _ := ex.Execute(ctx, nil, cr, config.Target{Dir: "/opt"})
 	// Should detect change but NOT upload (dry-run)
 	if r.Status != cue.StatusChanged {

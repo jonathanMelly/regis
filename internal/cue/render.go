@@ -156,7 +156,7 @@ func (e *RenderExecutor) executeFile(ctx context.Context, cr config.CueRef, targ
 		r.Diff = fmt.Sprintf("changed  remote:%s  rendered:%s", truncateHash(remoteHash), truncateHash(lmd5))
 	}
 
-	if IsDryRun(ctx) {
+	if IsCheckOnly(ctx) {
 		r.Status = StatusChanged
 		r.Elapsed = time.Since(start)
 		return r, nil
@@ -196,7 +196,7 @@ func (e *RenderExecutor) executeFolder(ctx context.Context, cr config.CueRef, ta
 	if !strings.HasSuffix(remoteDest, sep) {
 		remoteDest += sep
 	}
-	dryRun := IsDryRun(ctx)
+	checkOnly := IsCheckOnly(ctx)
 	useSudo := cr.Sudo || target.Sudo
 
 	// Walk temp dir and collect all generated files.
@@ -277,7 +277,7 @@ func (e *RenderExecutor) executeFolder(ctx context.Context, cr config.CueRef, ta
 		}
 		changedNames = append(changedNames, lf.relPath)
 
-		if !dryRun {
+		if !checkOnly {
 			if err := e.conn.UploadBytes(localData, remoteFilePath, 0644, useSudo); err != nil {
 				r.Status = StatusFailed
 				r.Err = fmt.Errorf("upload %s: %w", lf.relPath, err)
@@ -290,7 +290,7 @@ func (e *RenderExecutor) executeFolder(ctx context.Context, cr config.CueRef, ta
 
 	// Prune remote-only files.
 	var prunedNames []string
-	if cr.Prune != nil && *cr.Prune && !dryRun {
+	if cr.Prune != nil && *cr.Prune && !checkOnly {
 		findCmd := "find " + shellQuote(remoteDest) + " -type f"
 		findOut, _, _, _ := e.conn.Run(findCmd)
 		for _, line := range strings.Split(strings.TrimSpace(findOut), "\n") {
@@ -353,7 +353,7 @@ func (e *RenderExecutor) executeFolder(ctx context.Context, cr config.CueRef, ta
 	}
 	r.Stdout = summary.String()
 
-	if !dryRun && cr.Post.Cmd != "" {
+	if !checkOnly && cr.Post.Cmd != "" {
 		r.PostActions = []PostAction{{Cmd: cr.Post.Cmd, Sudo: cr.Post.Sudo || target.Sudo}}
 	}
 	r.Elapsed = time.Since(start)

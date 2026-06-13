@@ -16,7 +16,7 @@ func TestRootCommand_hasVersionFlag(t *testing.T) {
 
 func TestGlobalFlags(t *testing.T) {
 	root := cmd.NewRootCommand("dev")
-	flags := []string{"file", "target", "dry-run", "run-without-check", "verbose", "quiet", "plain", "nature", "allow-dirty", "no-git"}
+	flags := []string{"file", "target", "run-without-check", "verbose", "quiet", "plain", "nature", "allow-dirty", "no-git"}
 	for _, name := range flags {
 		if f := root.PersistentFlags().Lookup(name); f == nil {
 			t.Errorf("missing global flag: --%s", name)

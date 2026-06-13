@@ -17,7 +17,7 @@ import (
 
 // Options controls runner behavior.
 type Options struct {
-	DryRun           bool
+	CheckOnly        bool // compare-only / rdiff — no uploads or remote commands
 	SkipConfirm      bool
 	NatureFilter     []string            // empty = all natures
 	PruneReleases    bool                // prune old state records after a successful deploy
@@ -159,7 +159,7 @@ func Run(ctx context.Context, cfg *config.Config, scenarioNames []string, target
 
 	rr := &RunResult{Target: target}
 
-	// PHASE 1a: generate cues — always run, even in dry-run.
+	// PHASE 1a: generate cues — always run, even in check-only (rdiff) mode.
 	// They produce artifacts (e.g. rendered config files) that downstream config cues
 	// compare against the remote during rdiff. Running them unconditionally avoids a
 	// stale-file race in the parallel pre-check.
@@ -182,8 +182,8 @@ func Run(ctx context.Context, cfg *config.Config, scenarioNames []string, target
 		}
 	}
 
-	// PHASE 1b: other local cues (local: true actions) — skipped in dry-run.
-	if !opts.DryRun && len(otherLocalSteps) > 0 {
+	// PHASE 1b: other local cues (local: true actions) — skipped in check-only (rdiff) mode.
+	if !opts.CheckOnly && len(otherLocalSteps) > 0 {
 		results, err := ExecutePhase(ctx, Phase{Local: true, Steps: otherLocalSteps}, nil, target, execWith(dispatch), onResult)
 		rr.Results = append(rr.Results, results...)
 		tallyCounts(rr, results)
@@ -195,11 +195,11 @@ func Run(ctx context.Context, cfg *config.Config, scenarioNames []string, target
 	}
 
 	// PHASE 2: remote (SSH required)
-	// In dry-run mode: executors use their pre-dialed e.conn; no second dial needed.
-	// Pass nil as conn — executors ignore it (they use e.conn). DryRun context tells
+	// Check-only (rdiff) mode: executors use their pre-dialed e.conn; no second dial needed.
+	// Pass nil as conn — executors ignore it (they use e.conn). CheckOnly context tells
 	// them to compare only and skip uploads.
-	if opts.DryRun {
-		ctx = cue.WithDryRun(ctx)
+	if opts.CheckOnly {
+		ctx = cue.WithCheckOnly(ctx)
 		if len(remotePhase.Steps) > 0 {
 			ctx = bulkPrefetchBinary(ctx, dispatch.BulkConn, remotePhase.Steps, target)
 			results, _ := ExecutePhase(ctx, remotePhase, nil, target, execWith(dispatch), onResult)
@@ -317,7 +317,7 @@ func Run(ctx context.Context, cfg *config.Config, scenarioNames []string, target
 		_ = runPrePost(ctx, pp, conn)
 	}
 
-	// Write state record after every non-dry-run deploy.
+	// Write state record after every real deploy (not check-only).
 	// State tracking is enabled by default. Disable with state.enabled: false.
 	stateEnabled := cfg.State.Enabled == nil || *cfg.State.Enabled
 	if stateEnabled {
