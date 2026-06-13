@@ -91,7 +91,7 @@ func RenderTree(results []cue.Result, target string, total time.Duration,
 	// Manifest line (when available).
 	if minfo != nil {
 		fmt.Fprintf(&sb, "  deployed: %s  %s  %s\n",
-			minfo.Release,
+			minfo.ID,
 			minfo.DeployedAt.Format("2006-01-02 15:04"),
 			minfo.DeployedBy,
 		)

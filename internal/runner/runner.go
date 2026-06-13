@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
-	"path"
 	"strings"
 	"time"
 
@@ -21,8 +20,10 @@ type Options struct {
 	DryRun           bool
 	SkipConfirm      bool
 	NatureFilter     []string            // empty = all natures
-	PruneReleases    bool                // prune old releases (remote + local) after a successful deploy
-	ForceManifest    bool                // write manifest even when no cue changed (covers manual-sync scenarios)
+	PruneReleases    bool                // prune old state records after a successful deploy
+	ForceManifest    bool                // deprecated: state is always complete; kept for backward compat
+	AllowDirty       bool                // allow deploy with uncommitted changes (git_ref is approximate)
+	NoGit            bool                // allow deploy without a git repository (no git_ref recorded)
 	DeduplicateSteps bool                // drop duplicate (ScenarioName, CueName) steps — rdiff only
 	ScenarioFilter   []string            // if non-empty, keep only steps whose ScenarioName is in this set — rdiff only
 	CueFilter        []string            // if non-empty, keep only steps whose Name is in this set — rdiff only
@@ -56,7 +57,7 @@ func Run(ctx context.Context, cfg *config.Config, scenarioNames []string, target
 
 	// Generate release ID now so ${RELEASE_ID} is consistent across all cues
 	// and matches any pre-deploy backup labels (e.g. backup --label=pre-${RELEASE_ID}).
-	releaseID := NewReleaseID()
+	releaseID := NewStateID()
 	baseEnv := map[string]string{"RELEASE_ID": releaseID}
 
 	var steps []Step
@@ -209,6 +210,21 @@ func Run(ctx context.Context, cfg *config.Config, scenarioNames []string, target
 		return rr, nil
 	}
 
+	// Git hygiene gate: require a clean, tracked tree so the state's git_ref is meaningful.
+	if ref := currentGitRef(); ref == "" {
+		if !opts.NoGit {
+			return nil, fmt.Errorf("not in a git repository — use --no-git to deploy without git tracking")
+		}
+		rr.SystemWarnings = append(rr.SystemWarnings,
+			"--no-git: deploying without git tracking; state will have no git_ref")
+	} else if !isGitClean() {
+		if !opts.AllowDirty {
+			return nil, fmt.Errorf("working tree has uncommitted changes — commit or stash first, or use --allow-dirty to deploy anyway")
+		}
+		rr.SystemWarnings = append(rr.SystemWarnings,
+			"--allow-dirty: deploying with uncommitted changes; git_ref in state is approximate")
+	}
+
 	conn, err := regssh.Dial(target)
 	if err != nil {
 		rr.Err = fmt.Errorf("SSH connect: %w", err)
@@ -250,12 +266,8 @@ func Run(ctx context.Context, cfg *config.Config, scenarioNames []string, target
 	if phaseErr != nil {
 		// Check on_error policy for the failing scenario.
 		failSc := failingScenarioName(results, remotePhase.Steps)
-		if effectiveOnError(cfg, failSc) == "rollback" {
-			localDir := cfg.Release.LocalDir
-			if localDir == "" {
-				localDir = ".regis-releases"
-			}
-			rr.RollbackOutcome = executeRollback(ctx, conn, cfg, order, releaseID, localDir, target, dispatch, onResult, results, remotePhase.Steps)
+		if effectiveOnError(cfg, failSc) == "restore" {
+			rr.RestoreOutcome = executeRestore(ctx, conn, cfg, order, releaseID, target, dispatch, onResult, results, remotePhase.Steps)
 		}
 		rr.Err = phaseErr
 		rr.Elapsed = time.Since(start)
@@ -305,54 +317,30 @@ func Run(ctx context.Context, cfg *config.Config, scenarioNames []string, target
 		_ = runPrePost(ctx, pp, conn)
 	}
 
-	// Write release manifest + local snapshot + remote archive if any release-affecting cue changed,
-	// or when --force-manifest is set (covers manual-sync + regis-run where nothing changed).
-	// Release tracking is enabled by default. Disable with release.enabled: false.
-	releaseEnabled := cfg.Release.Enabled == nil || *cfg.Release.Enabled
-	if releaseEnabled {
-		shouldWriteManifest := opts.ForceManifest
-		for _, r := range rr.Results {
-			if r.IsReleaseAffecting() {
-				shouldWriteManifest = true
-				break
-			}
+	// Write state record after every non-dry-run deploy.
+	// State tracking is enabled by default. Disable with state.enabled: false.
+	stateEnabled := cfg.State.Enabled == nil || *cfg.State.Enabled
+	if stateEnabled {
+		localDir := cfg.State.LocalDir
+		if localDir == "" {
+			localDir = ".regis-states"
 		}
-		if shouldWriteManifest {
-			manifest := BuildManifest(releaseID, scenarioNames, rr.Results, remotePhase.Steps, target.Dir, opts.ForceManifest)
-			if err := WriteManifest(conn, target.Dir, manifest, target.Sudo); err != nil {
-				rr.SystemWarnings = append(rr.SystemWarnings,
-					fmt.Sprintf("manifest write failed — release tracking degraded: %v", err))
+		prevState := LatestLocalState(localDir, target.Name)
+		state := BuildState(releaseID, scenarioNames, rr.Results, remotePhase.Steps, target.Dir, target.Name, prevState)
+		if err := SaveState(state, localDir); err != nil {
+			rr.SystemWarnings = append(rr.SystemWarnings,
+				fmt.Sprintf("state save failed — local tracking degraded: %v", err))
+		}
+		if err := WriteStateToRemote(conn, target.Dir, state, target.Sudo); err != nil {
+			rr.SystemWarnings = append(rr.SystemWarnings,
+				fmt.Sprintf("state upload failed — remote tracking degraded: %v", err))
+		}
+		if opts.PruneReleases {
+			keep := cfg.State.Keep
+			if keep <= 0 {
+				keep = 5
 			}
-			localDir := cfg.Release.LocalDir
-			if localDir == "" {
-				localDir = ".regis-releases"
-			}
-			if snapWarns := SnapshotRelease(localDir, releaseID, manifest, remotePhase.Steps, rr.Results); len(snapWarns) > 0 {
-				rr.SystemWarnings = append(rr.SystemWarnings, snapWarns...)
-			}
-			releaseDir := cfg.Release.Dir
-			if releaseDir == "" {
-				releaseDir = path.Join(target.Dir, ".regis-releases")
-			}
-			if err := ArchiveRelease(conn, target.Dir, releaseDir, releaseID); err != nil {
-				rr.SystemWarnings = append(rr.SystemWarnings,
-					fmt.Sprintf("remote archive failed — rollback from remote unavailable: %v", err))
-			}
-			if opts.PruneReleases {
-				keep := cfg.Release.Keep
-				if keep <= 0 {
-					keep = 5
-				}
-				pruneCmd := fmt.Sprintf(
-					"ls -dt %s/v* 2>/dev/null | tail -n +%d | xargs -r rm -rf 2>/dev/null; true",
-					releaseDir, keep+1,
-				)
-				if _, _, code, runErr := conn.Run(pruneCmd); runErr != nil || code != 0 {
-					rr.SystemWarnings = append(rr.SystemWarnings,
-						fmt.Sprintf("remote release prune failed (exit %d)", code))
-				}
-				PruneLocalSnapshots(localDir, keep)
-			}
+			PruneLocalStates(localDir, target.Name, keep)
 		}
 	}
 

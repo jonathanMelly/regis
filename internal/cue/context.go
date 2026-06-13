@@ -11,7 +11,7 @@ type manifestKey struct{}
 
 // Manifest holds release manifest data used during rdiff drift detection.
 type Manifest struct {
-	Release    string
+	ID         string
 	DeployedAt string // formatted for display
 	DeployedBy string
 	Hashes     map[string]string

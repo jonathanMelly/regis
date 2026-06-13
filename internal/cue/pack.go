@@ -13,7 +13,7 @@
 //	src: application/**  dest: /var/www/  →  application/img/logo.png  →  /var/www/img/logo.png
 //	git: true            dest: /var/www/  →  cmd/main.go               →  /var/www/cmd/main.go
 //
-// Direction: local → remote. Always release-affecting.
+// Direction: local → remote. Always state-affecting.
 //
 // Prune strategy (three tiers, first match wins):
 //
@@ -22,7 +22,7 @@
 //	Tier 3  — informational: lists unmanaged files, no deletion
 //
 // The managed manifest is always written after a successful deploy so tier 1 is ready on the next run.
-// rollback: true — restores all pack files from the local release snapshot. Pack files are
+// restore: true — re-deploy previous version from git at the recorded state ref. Pack files are
 // automatically included in the snapshot when rollback: true is set.
 package cue
 
@@ -51,9 +51,9 @@ type PackExecutor struct {
 // NewPackExecutor creates a PackExecutor.
 func NewPackExecutor(conn SSHConn) *PackExecutor { return &PackExecutor{conn: conn} }
 
-// WithReleaseDir configures the remote release archive path and skip-confirm flag
+// WithStateDir configures the remote state archive path and skip-confirm flag
 // for tier 1b/1c prune lookups. Called by run.go after loading config.
-func (e *PackExecutor) WithReleaseDir(dir string, skipConfirm bool) *PackExecutor {
+func (e *PackExecutor) WithStateDir(dir string, skipConfirm bool) *PackExecutor {
 	e.releaseRemoteDir = dir
 	e.skipConfirm = skipConfirm
 	return e
@@ -63,7 +63,7 @@ func (e *PackExecutor) WithReleaseDir(dir string, skipConfirm bool) *PackExecuto
 // then writes the managed-file manifest and runs the three-tier prune if prune: true.
 func (e *PackExecutor) Execute(ctx context.Context, conn SSHConn, cr config.CueRef, target config.Target) (Result, error) {
 	start := time.Now()
-	r := Result{CueName: cr.Name, Nature: "pack", AffectsRelease: true}
+	r := Result{CueName: cr.Name, Nature: "pack", AffectsState: true}
 
 	if e.conn == nil {
 		r.Status = StatusFailed
@@ -341,7 +341,7 @@ func (e *PackExecutor) Execute(ctx context.Context, conn SSHConn, cr config.CueR
 	// Three-tier prune.
 	type pruneResult struct {
 		report   string
-		affected bool // true if files were actually deleted (drives AffectsRelease)
+		affected bool // true if files were actually deleted (drives AffectsState)
 	}
 	var pr pruneResult
 	if packPruneEnabled(cr) && !dryRun {
@@ -358,8 +358,8 @@ func (e *PackExecutor) Execute(ctx context.Context, conn SSHConn, cr config.CueR
 		r.LocalHash = multiFileHash(localHashes)
 	}
 
-	// AffectsRelease only when something actually changed or was pruned on the remote.
-	r.AffectsRelease = len(changedNames) > 0 || pr.affected
+	// AffectsState only when something actually changed or was pruned on the remote.
+	r.AffectsState = len(changedNames) > 0 || pr.affected
 
 	// StatusChanged only when files were actually uploaded or pruned.
 	// Tier-3 informational reports (no actual deletions) are surfaced as stdout
@@ -381,7 +381,7 @@ func (e *PackExecutor) Execute(ctx context.Context, conn SSHConn, cr config.CueR
 		r.FileChanged = 0
 		r.Elapsed = time.Since(start)
 		// Populate artifact paths even when unchanged so --force-manifest can record
-		// this cue's files into the release manifest without a re-deploy.
+		// this cue's files into the state record without a re-deploy.
 		r.ArtifactPaths = make(map[string]string, len(srcs))
 		r.LocalArtifacts = make(map[string]string, len(srcs))
 		r.LocalFileHashes = make(map[string]string, len(srcs))
@@ -425,7 +425,7 @@ func (e *PackExecutor) Execute(ctx context.Context, conn SSHConn, cr config.CueR
 		r.PostActions = []PostAction{{Cmd: cr.Post.Cmd, Sudo: cr.Post.Sudo || target.Sudo}}
 	}
 
-	// Populate artifact maps for per-cue rollback support.
+	// Populate artifact maps for per-cue restore support.
 	// Covers all pack files (not just changed ones) so the snapshot is complete.
 	r.LocalArtifacts = make(map[string]string, len(srcs))
 	r.ArtifactPaths = make(map[string]string, len(srcs))

@@ -74,11 +74,11 @@ var defaults = map[string]string{
 
 	"RunConfig.OnError":     "halt",
 
-	"ReleaseConfig.Enabled":  "true",
+	"StateConfig.Enabled":  "true",
 
-	"ReleaseConfig.LocalDir": ".regis-releases",
+	"StateConfig.LocalDir": ".regis-states",
 
-	"ReleaseConfig.Keep":    "5",
+	"StateConfig.Keep":    "5",
 
 	"ConcurrencyConfig.Lock":     "true",
 
@@ -146,7 +146,7 @@ const sectionKeyConceptsBody = `
 
 ` + "`requires: [scenario-a, scenario-b]`" + ` declares prerequisites — scenarios that must complete before this one starts. Prerequisites are **deduplicated**: if multiple scenarios all require ` + "`build`" + `, it runs exactly once. ` + "`needs:`" + ` is an accepted alias.
 
-Each scenario in ` + "`requires:`" + ` is **independent**: it runs as its own unit with its own ` + "`on_error`" + ` policy. A failure in a prerequisite does **not** trigger the dependent scenario's ` + "`on_error: rollback`" + `. Use inline scenario refs (` + "`{ scenario: x }`" + ` in ` + "`cues:`" + `) when you need the parent's ` + "`on_error`" + ` to cover the referenced scenario's cues.
+Each scenario in ` + "`requires:`" + ` is **independent**: it runs as its own unit with its own ` + "`on_error`" + ` policy. A failure in a prerequisite does **not** trigger the dependent scenario's ` + "`on_error: restore`" + `. Use inline scenario refs (` + "`{ scenario: x }`" + ` in ` + "`cues:`" + `) when you need the parent's ` + "`on_error`" + ` to cover the referenced scenario's cues.
 
 
 
@@ -194,17 +194,17 @@ Two mechanisms for scenario composition — choose consciously:
 |---|---|---|
 | Deduplication | yes — each scenario runs once even if required by many | no — expands at the call-site position each time |
 | Ordering | all prerequisites complete before parent starts | cues interleave at the exact position in the list |
-| ` + "`on_error`" + ` scope | each scenario is independent — parent's rollback does not cover it | parent's ` + "`on_error`" + ` applies — a failure in an inlined cue triggers the composing scenario's rollback |
-| Use when | "these must finish first; they own their error handling" | "these cues are part of me; rollback everything together" |
+| ` + "`on_error`" + ` scope | each scenario is independent — parent's restore does not cover it | parent's ` + "`on_error`" + ` applies — a failure in an inlined cue triggers the composing scenario's rollback |
+| Use when | "these must finish first; they own their error handling" | "these cues are part of me; restore everything together" |
 
-` + "```yaml\n# requires: — files deploy independently, before deploy starts.\n# If app fails, app's on_error applies (default: halt). deploy's rollback never fires.\ndeploy:\n  requires: [app, config]\n  on_error: rollback   # only covers deploy's own cues\n  cues:\n    - name: migrate ...\n\n# inline ref — files are part of deploy. If app's pack cue fails,\n# deploy's on_error: rollback fires and rolls back everything.\ndeploy:\n  on_error: rollback\n  cues:\n    - { scenario: app }    # expanded inline; parent's on_error covers this\n    - { scenario: config }\n    - name: migrate ...\n```" + `
+` + "```yaml\n# requires: — files deploy independently, before deploy starts.\n# If app fails, app's on_error applies (default: halt). deploy's rollback never fires.\ndeploy:\n  requires: [app, config]\n  on_error: restore   # only covers deploy's own cues\n  cues:\n    - name: migrate ...\n\n# inline ref — files are part of deploy. If app's pack cue fails,\n# deploy's on_error: restore fires and rolls back everything.\ndeploy:\n  on_error: restore\n  cues:\n    - { scenario: app }    # expanded inline; parent's on_error covers this\n    - { scenario: config }\n    - name: migrate ...\n```" + `
 
 Narrowing: ` + "`{ scenario: app, cue: source }`" + ` runs only the named cue; ` + "`{ scenario: app, cues: [source, env] }`" + ` runs a subset. Nested refs are supported.`
 
 const sectionMixedDeploys = `
 These scenarios arise whenever files reach the target outside of a normal ` + "`regis run`" + ` — emergency
 hotfixes, manual uploads, a partial deploy that failed mid-way, or a first-time bootstrap.
-The release manifest (` + "`.regis-release`" + ` in ` + "`target.dir`" + `) may then be missing, incomplete, or describe
+The deployment state (` + "`.regis-state`" + ` in ` + "`target.dir`" + `) may then be missing, incomplete, or describe
 a different set of files than what is actually on the target.
 
 **Why it matters** — rdiff uses the manifest's recorded hashes for fast drift detection. A stale
@@ -212,11 +212,11 @@ manifest causes false drift alerts or hides real ones. Rollback restores files f
 archive, which is consistent with the manifest at archive time; a rebuild creates a new archive
 from the current target state so future rollbacks land in a known-good place.
 
-#### Diagnosis — ` + "`release check`" + `
+#### Diagnosis — ` + "`state check`" + `
 
 ` + "```" + `
-regis release check          # compare live manifest hashes against actual remote files
-regis release check v20260601-120000  # compare a historical manifest instead
+regis state check          # compare live manifest hashes against actual remote files
+regis state check v20260601-120000  # compare a historical manifest instead
 ` + "```" + `
 
 Output per cue:
@@ -232,16 +232,16 @@ Output per cue:
 
 **1. Rebuild the manifest** (recommended when target files are correct but manifest is stale):
 ` + "```" + `
-regis release check --rebuild
+regis state check --rebuild
 ` + "```" + `
-Hashes every tracked remote file, writes a new manifest with a fresh release ID, creates a local
+Hashes every tracked remote file, writes a new manifest with a fresh state ID, creates a local
 snapshot, and archives the current target state. Future ` + "`rollback`" + ` will restore this state.
 **Best-effort**: hashes reflect remote files at check time. If local sources diverge from target,
 run ` + "`regis run`" + ` for a guaranteed accurate manifest.
 
 **2. Remove the manifest** (clean slate, next ` + "`regis run`" + ` creates a fresh one):
 ` + "```" + `
-regis release check --remove
+regis state check --remove
 ` + "```" + `
 
 **3. Force-manifest on next run** (all files already correct, just need a manifest):
@@ -250,7 +250,7 @@ regis run --force-manifest
 ` + "```" + `
 Writes a manifest even when nothing changed (all StatusEqual). Hashes binary files from
 ` + "`r.LocalHash`" + `; single-src config/secret from ` + "`Src[0]`" + `; multi-src config is skipped (no single
-representative hash). Use ` + "`release check --rebuild`" + ` if you need config/secret hashes too.
+representative hash). Use ` + "`state check --rebuild`" + ` if you need config/secret hashes too.
 
 **4. Fresh deploy** (wipe target and redeploy from scratch — forces all StatusChanged):
 ` + "```" + `
@@ -263,7 +263,7 @@ hashes. Prompts for confirmation unless ` + "`--yes`" + ` is set. Backup path:
 
 #### Release history after remediation
 
-All remediation paths (rebuild, force-manifest, fresh) generate a **new release ID** and append it
+All remediation paths (rebuild, force-manifest, fresh) generate a **new state ID** and append it
 to the archive — they do not rewrite history. After a rebuild following a partial deploy:
 
 ` + "```" + `
@@ -493,8 +493,8 @@ func buildDenseSchema(typesFile string) (string, error) {
 			b.WriteString("        # ── pack / render folder mode ──\n")
 		case "manager":
 			b.WriteString("        # ── service (manager: present infers nature: service) ──\n")
-		case "rollback":
-			b.WriteString("        # ── per-cue rollback (infers on_error: rollback; true/\"cmd\"/{shell,sudo}/defer) ──\n")
+		case "restore":
+			b.WriteString("        # ── per-cue rollback (infers on_error: restore; true/\"cmd\"/{shell,sudo}/defer) ──\n")
 		}
 		fl(pfx, fi.yamlKey, schemaVal(fi, cueReq[fi.yamlKey]), schemaComment(fi, cueReq[fi.yamlKey]))
 	}
@@ -504,7 +504,7 @@ func buildDenseSchema(typesFile string) (string, error) {
 	b.WriteString("        nature: action       # checks are read-only action cues\n")
 	b.WriteString("        shell: <string>      # probe command\n")
 	// rollback list — actions run on remote after file-snapshot restore
-	b.WriteString("    rollback:                # actions run on remote after snapshot restore when on_error: rollback\n")
+	b.WriteString("    rollback:                # actions run on remote after snapshot restore when on_error: restore\n")
 	b.WriteString("      - name: <string>       # required\n")
 	b.WriteString("        shell: <string>      # remote command; $RELEASE_ID is available\n")
 	b.WriteString("        sudo: false\n")
@@ -870,21 +870,21 @@ func buildSchemaSection(typesFile string) (string, error) {
 
 	}
 
-	buf.WriteString("\n`release.enabled: true` (default) — assigns a release ID per deploy, archives files locally and remotely for rollback. Set to `false` for live deploys with no history.\n")
+	buf.WriteString("\n`release.enabled: true` (default) — assigns a state ID per deploy, archives files locally and remotely for rollback. Set to `false` for live deploys with no history.\n")
 
 	buf.WriteString("\n---\n\n")
 
 	buf.WriteString("### Rollback\n\n")
 
-	buf.WriteString("When `on_error: rollback` triggers (explicit or inferred from per-cue `rollback:` fields), a deploy failure runs rollback in four steps:\n\n")
+	buf.WriteString("When `on_error: restore` triggers (explicit or inferred from per-cue `rollback:` fields), a deploy failure runs rollback in four steps:\n\n")
 	buf.WriteString("1. Find the most recent local release snapshot (`.regis-releases/<prevID>/`).\n")
 	buf.WriteString("2. **Per-cue compensations** — execute in full **reverse execution order** for every cue where `rollback:` is enabled:\n")
 	buf.WriteString("   - File natures (binary/config/secret/render/pack): re-upload the previous snapshot's files for that cue to their recorded remote paths.\n")
 	buf.WriteString("   - Action natures: run the `rollback: \"shell cmd\"` command on the remote.\n")
-	buf.WriteString("3. If no per-cue `rollback:` was declared (legacy / explicit `on_error: rollback`): re-upload **all** artifacts from the previous snapshot.\n")
+	buf.WriteString("3. If no per-cue `rollback:` was declared (legacy / explicit `on_error: restore`): re-upload **all** artifacts from the previous snapshot.\n")
 	buf.WriteString("4. **Scenario-level rollback block** — the `rollback:` cue list under each scenario runs in topo order.\n\n")
 
-	buf.WriteString("**Inferred `on_error: rollback`**: if any direct cue in a scenario declares `rollback: true` or `rollback: \"cmd\"`, the runner automatically treats that scenario as `on_error: rollback` — no explicit setting needed.\n\n")
+	buf.WriteString("**Inferred `on_error: restore`**: if any direct cue in a scenario declares `rollback: true` or `rollback: \"cmd\"`, the runner automatically treats that scenario as `on_error: restore` — no explicit setting needed.\n\n")
 
 	buf.WriteString("**Per-cue rollback syntax** (on any cue in `cues:`):\n\n")
 	buf.WriteString("```yaml\n# File natures — restore from previous snapshot\n- name: frontend\n  nature: pack\n  src: dist/**\n  dest: ./\n  rollback: true          # restores all pack files from previous snapshot\n\n# Action natures — run a compensation command\n- name: go-offline\n  shell: touch maintenance.flag\n  rollback: \"rm -f maintenance.flag\"   # undo: remove the flag\n\n# Or with sudo:\n- name: deploy-service\n  shell: systemctl start myapp\n  rollback:\n    shell: systemctl stop myapp\n    sudo: true\n\n# rollback: defer — re-run this cue's shell AFTER all per-cue file restores complete.\n# Use when the command must reconcile with restored files (e.g. dependency install).\n- name: install-deps\n  shell: composer install\n  rollback: defer         # skipped in reverse phase; re-run after vendor/ is restored\n```\n\n")
@@ -1215,7 +1215,7 @@ func buildCLISection(cobraDir string) string {
 
 		"enable": true, "disable": true, "logs": true,
 
-		"list": true, "current": true, "rollback": true,
+		"list": true, "current": true, "restore": true,
 
 		"regis": true, // root command
 
@@ -1265,7 +1265,9 @@ func buildCLISection(cobraDir string) string {
 
 	buf.WriteString("| `--dry-run` | `-n` | show what would happen without executing |\n")
 
-	buf.WriteString("| `--yes` | `-y` | skip confirmation prompts (CI mode) |\n")
+	buf.WriteString("| `--run-without-check` | | deploy without rdiff preview (CI/automation) |\n")
+	buf.WriteString("| `--allow-dirty` | | allow rdiff and deploy with uncommitted changes |\n")
+	buf.WriteString("| `--no-git` | | allow rdiff and deploy without a git repository |\n")
 
 	buf.WriteString("| `--verbose` | `-v` | show unchanged cues and full command output |\n")
 

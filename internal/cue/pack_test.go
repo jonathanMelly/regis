@@ -461,7 +461,7 @@ func TestPackExecutor_gitTrue_showsCommitHash_changed(t *testing.T) {
 
 // TestPackExecutor_equalPopulatesArtifactPaths guards the fix: ArtifactPaths and
 // LocalArtifacts must be populated even when StatusEqual so that --force-manifest
-// can record the pack cue into the release manifest without a re-deploy.
+// can record the pack cue into the state record without a re-deploy.
 func TestPackExecutor_equalPopulatesArtifactPaths(t *testing.T) {
 	dir := t.TempDir()
 	content := []byte("hello")

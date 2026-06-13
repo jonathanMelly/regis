@@ -122,7 +122,7 @@ func TestGenerateExecutor_not_release_affecting_when_changed(t *testing.T) {
 		ChangedWhen: config.WhenExpr{BoolLiteral: &tr},
 	}
 	r, _ := ex.Execute(context.Background(), nil, cr, config.Target{})
-	if r.IsReleaseAffecting() {
+	if r.IsStateAffecting() {
 		t.Error("generate must never be release-affecting")
 	}
 }

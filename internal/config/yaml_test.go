@@ -261,30 +261,30 @@ scenarios: {}
 	}
 }
 
-// ── CueRollback.UnmarshalYAML ─────────────────────────────────────────────
+// ── CueRestore.UnmarshalYAML ─────────────────────────────────────────────
 
 func TestCueRollback_boolTrue(t *testing.T) {
-	var got config.CueRollback
+	var got config.CueRestore
 	if err := yaml.Unmarshal([]byte(`true`), &got); err != nil {
 		t.Fatal(err)
 	}
 	if !got.Enabled || got.Shell != "" || got.Sudo {
-		t.Errorf("rollback: true — unexpected: %+v", got)
+		t.Errorf("restore: true — unexpected: %+v", got)
 	}
 }
 
 func TestCueRollback_boolFalse(t *testing.T) {
-	var got config.CueRollback
+	var got config.CueRestore
 	if err := yaml.Unmarshal([]byte(`false`), &got); err != nil {
 		t.Fatal(err)
 	}
 	if got.Enabled {
-		t.Errorf("rollback: false — expected Enabled=false, got %+v", got)
+		t.Errorf("restore: false — expected Enabled=false, got %+v", got)
 	}
 }
 
 func TestCueRollback_stringShell(t *testing.T) {
-	var got config.CueRollback
+	var got config.CueRestore
 	if err := yaml.Unmarshal([]byte(`"rm -f maintenance.flag"`), &got); err != nil {
 		t.Fatal(err)
 	}
@@ -294,7 +294,7 @@ func TestCueRollback_stringShell(t *testing.T) {
 }
 
 func TestCueRollback_objectForm(t *testing.T) {
-	var got config.CueRollback
+	var got config.CueRestore
 	if err := yaml.Unmarshal([]byte("shell: systemctl stop myapp\nsudo: true"), &got); err != nil {
 		t.Fatal(err)
 	}
@@ -308,24 +308,24 @@ func TestCueRef_rollbackParsedFromYAML(t *testing.T) {
 name: go-offline
 nature: action
 shell: touch maintenance.flag
-rollback: "rm -f maintenance.flag"
+restore: "rm -f maintenance.flag"
 `
 	var got config.CueRef
 	if err := yaml.Unmarshal([]byte(src), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Rollback == nil || !got.Rollback.Enabled || got.Rollback.Shell != "rm -f maintenance.flag" {
-		t.Errorf("CueRef.Rollback not parsed: %+v", got.Rollback)
+	if got.Restore == nil || !got.Restore.Enabled || got.Restore.Shell != "rm -f maintenance.flag" {
+		t.Errorf("CueRef.Restore not parsed: %+v", got.Restore)
 	}
 }
 
 func TestCueRollback_defer(t *testing.T) {
-	var got config.CueRollback
+	var got config.CueRestore
 	if err := yaml.Unmarshal([]byte(`defer`), &got); err != nil {
 		t.Fatal(err)
 	}
 	if !got.Enabled || !got.Defer || got.Shell != "" || got.Sudo {
-		t.Errorf("rollback: defer — unexpected: %+v", got)
+		t.Errorf("restore: defer — unexpected: %+v", got)
 	}
 }
 
@@ -334,14 +334,14 @@ func TestCueRef_rollbackDeferParsedFromYAML(t *testing.T) {
 name: install-deps
 nature: action
 shell: composer install
-rollback: defer
+restore: defer
 `
 	var got config.CueRef
 	if err := yaml.Unmarshal([]byte(src), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Rollback == nil || !got.Rollback.Enabled || !got.Rollback.Defer {
-		t.Errorf("CueRef.Rollback (defer form) not parsed: %+v", got.Rollback)
+	if got.Restore == nil || !got.Restore.Enabled || !got.Restore.Defer {
+		t.Errorf("CueRef.Restore (defer form) not parsed: %+v", got.Restore)
 	}
 }
 
@@ -351,13 +351,13 @@ name: frontend
 nature: pack
 src: dist/**
 dest: /var/www/
-rollback: true
+restore: true
 `
 	var got config.CueRef
 	if err := yaml.Unmarshal([]byte(src), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Rollback == nil || !got.Rollback.Enabled || got.Rollback.Shell != "" {
-		t.Errorf("CueRef.Rollback (true form) not parsed: %+v", got.Rollback)
+	if got.Restore == nil || !got.Restore.Enabled || got.Restore.Shell != "" {
+		t.Errorf("CueRef.Restore (true form) not parsed: %+v", got.Restore)
 	}
 }

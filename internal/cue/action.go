@@ -2,7 +2,7 @@
 // doc:nature action
 // Runs a shell command. local: true runs on your machine; default runs on SSH target.
 // Always executes (no change detection).
-// rollback: "cmd" or {shell, sudo} — runs a compensation command on the remote when on_error: rollback triggers.
+// restore: "cmd" or {shell, sudo} — runs a compensation command when on_error: restore triggers.
 package cue
 
 import (
@@ -29,7 +29,7 @@ func (e *ActionExecutor) Execute(ctx context.Context, _ SSHConn, cr config.CueRe
 		CueName:        cr.Name,
 		Nature:         "action",
 		IsLocal:        cr.Local,
-		AffectsRelease: cr.AffectsRelease,
+		AffectsState: cr.AffectsState,
 		Cmd:            cr.Shell,
 	}
 

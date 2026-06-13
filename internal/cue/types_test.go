@@ -37,11 +37,11 @@ func TestApplied_othersPassThrough(t *testing.T) {
 
 func TestResult_isReleaseAffecting(t *testing.T) {
 	r := cue.Result{Nature: "binary", Status: cue.StatusChanged}
-	if !r.IsReleaseAffecting() {
+	if !r.IsStateAffecting() {
 		t.Error("binary changed cue must be release-affecting")
 	}
-	r2 := cue.Result{Nature: "action", Status: cue.StatusChanged, AffectsRelease: false}
-	if r2.IsReleaseAffecting() {
+	r2 := cue.Result{Nature: "action", Status: cue.StatusChanged, AffectsState: false}
+	if r2.IsStateAffecting() {
 		t.Error("remote action without affects_release must not be release-affecting")
 	}
 }

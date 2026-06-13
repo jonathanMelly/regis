@@ -53,7 +53,7 @@ type Result struct {
 	Diff             string        // unified diff text (config/secret)
 	Err              error
 	PostActions      []PostAction  // collected if Changed, for dedup phase
-	AffectsRelease   bool          // mirrors cue field — used by runner
+	AffectsState   bool          // mirrors cue field — used by runner
 	IsLocal          bool          // local action — never release-affecting
 	LocalPath        string        // local file path (binary cues, for display)
 	RemotePath       string        // remote file path (binary cues, for display)
@@ -72,9 +72,9 @@ type Result struct {
 	Cmd              string            // human-readable command/path that was or would be executed (for display in exec tab)
 }
 
-// IsReleaseAffecting reports whether this result should trigger release creation.
+// IsStateAffecting reports whether this result should trigger release creation.
 // Matches spec §4.3 "Release-affecting cues".
-func (r Result) IsReleaseAffecting() bool {
+func (r Result) IsStateAffecting() bool {
 	if r.Status != StatusChanged {
 		return false
 	}
@@ -85,7 +85,7 @@ func (r Result) IsReleaseAffecting() bool {
 	case "binary", "config", "secret", "render":
 		return true
 	case "action":
-		return r.AffectsRelease
+		return r.AffectsState
 	}
 	return false
 }

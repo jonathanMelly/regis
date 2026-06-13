@@ -40,11 +40,6 @@ func TestBulkHashRemote_batches(t *testing.T) {
 		return sb.String(), "", 0, nil
 	}}
 
-	paths := make([]string, 0, n)
-	for p := range contents {
-		paths = append(paths, p)
-	}
-
 	// Use the pack executor as an integration vehicle: create temp files and check equal.
 	dir := t.TempDir()
 	srcs := make([]string, n)

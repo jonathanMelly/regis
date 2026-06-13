@@ -83,7 +83,7 @@ func Validate(c *Config) []error {
 				}
 			}
 
-			if cr.Rollback != nil && cr.Rollback.Defer && cr.Shell == "" {
+			if cr.Restore != nil && cr.Restore.Defer && cr.Shell == "" {
 				add("scenario %q cue %q: rollback: defer requires a shell: command to re-run", scName, cr.Name)
 			}
 		}
@@ -94,7 +94,7 @@ func Validate(c *Config) []error {
 				}
 			}
 		}
-		for _, cr := range sc.Rollback {
+		for _, cr := range sc.Restore {
 			if cr.ScenarioRef != "" {
 				if _, ok := c.Scenarios[cr.ScenarioRef]; !ok {
 					add("scenario %q: rollback references undefined scenario %q", scName, cr.ScenarioRef)

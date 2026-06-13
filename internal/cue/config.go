@@ -3,7 +3,7 @@
 // Uploads a text file (nginx conf, YAML, etc.). Change detection via unified text diff shown in output.
 // Local file content is rendered with target env vars (${VAR} substitution) before comparison.
 // Direction: local→remote.
-// rollback: true — restores the previous config file from the local release snapshot.
+// restore: true — re-deploy previous version from git at the recorded state ref.
 package cue
 
 import (
@@ -38,7 +38,7 @@ func NewConfigExecutor(conn SSHConn, env ...map[string]string) *ConfigExecutor {
 // Multi-src / glob: uploads each file to dest/, preserving relative paths for glob patterns (tree mode).
 func (e *ConfigExecutor) Execute(ctx context.Context, conn SSHConn, cr config.CueRef, target config.Target) (Result, error) {
 	start := time.Now()
-	r := Result{CueName: cr.Name, Nature: "config", AffectsRelease: true}
+	r := Result{CueName: cr.Name, Nature: "config", AffectsState: true}
 
 	if e.conn == nil {
 		r.Status = StatusFailed

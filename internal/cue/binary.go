@@ -2,7 +2,7 @@
 // doc:nature binary
 // Uploads a compiled executable. Change detection: mtime+size fast path, hash fallback.
 // Atomic upload: copies to <dest>.new, then mv. Direction: local→remote.
-// rollback: true — restores the previous binary from the local release snapshot.
+// restore: true — re-deploy previous version from git at the recorded state ref.
 package cue
 
 import (
@@ -54,7 +54,7 @@ func (e *BinaryExecutor) Execute(ctx context.Context, _ SSHConn, cr config.CueRe
 	r := Result{
 		CueName:        cr.Name,
 		Nature:         "binary",
-		AffectsRelease: true,
+		AffectsState: true,
 	}
 
 	if e.conn == nil {

@@ -215,7 +215,7 @@ func TestValidate_rollbackRef_undefined_scenario(t *testing.T) {
 	c := minimalCfg()
 	c.Scenarios["deploy"] = config.Scenario{
 		Cues:     []config.CueRef{{Name: "x", Nature: "action", Shell: "echo hi"}},
-		Rollback: []config.CueRef{{ScenarioRef: "no-such-scenario"}},
+		Restore: []config.CueRef{{ScenarioRef: "no-such-scenario"}},
 	}
 	errs := config.Validate(c)
 	if len(errs) == 0 {

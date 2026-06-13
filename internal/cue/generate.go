@@ -3,7 +3,7 @@
 // Runs a shell command locally to produce artifacts (e.g. rendered config files).
 // Always executes — even during rdiff — so downstream config cues compare fresh output.
 // Reports = by default (no noise in rdiff output); use changed_when: true to mark as changed.
-// rollback: not applicable — generate cues run locally and produce no remote state to restore.
+// restore: not applicable — generate cues run locally and produce no remote state to restore.
 package cue
 
 import (

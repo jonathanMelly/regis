@@ -15,21 +15,8 @@ type resolvedSrc struct {
 	pattern string // original pattern (may be a glob or a named path)
 }
 
-// expandSrc expands a StringOrList of src paths, resolving any glob patterns.
-// Returns concrete file paths in the order they are encountered.
-func expandSrc(srcs config.StringOrList) ([]string, error) {
-	rs, err := expandSrcResolved(srcs)
-	if err != nil {
-		return nil, err
-	}
-	paths := make([]string, len(rs))
-	for i, r := range rs {
-		paths[i] = r.path
-	}
-	return paths, nil
-}
-
-// expandSrcResolved is like expandSrc but retains the originating pattern for
+// expandSrcResolved expands a StringOrList of src paths, resolving any glob patterns.
+// Retains the originating pattern for
 // each resolved file — used by config tree-mode and pack to preserve relative paths.
 func expandSrcResolved(srcs config.StringOrList) ([]resolvedSrc, error) {
 	var result []resolvedSrc

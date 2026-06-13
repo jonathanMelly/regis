@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 
 	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v3"
 	"git.disroot.org/jmy/regis/internal/config"
 	"git.disroot.org/jmy/regis/internal/runner"
 	regssh "git.disroot.org/jmy/regis/internal/ssh"
@@ -57,18 +56,10 @@ Useful for disaster recovery, new machine setup, or reverse-engineering a deploy
 					defer conn.Close()
 
 					// Bootstrap local release archive: read the remote manifest to get the
-					// release ID so we can create a matching local snapshot entry.
+					// Read current state ID for display purposes.
 					var snapshotID string
-					var snapshotManifestRaw []byte
-					snapshotFiles := map[string][]byte{}
-					if cfg.Release.Dir != "" {
-						if raw, dlErr := conn.Download(tgt.Dir + "/.regis-release"); dlErr == nil {
-							var rm runner.ReleaseManifest
-							if yaml.Unmarshal(raw, &rm) == nil && rm.Release != "" {
-								snapshotID = rm.Release
-								snapshotManifestRaw = raw
-							}
-						}
+					if state, stErr := runner.LoadRemoteState(conn, tgt.Dir); stErr == nil {
+						snapshotID = state.ID
 					}
 
 					for scName, sc := range cfg.Scenarios {
@@ -86,11 +77,6 @@ Useful for disaster recovery, new machine setup, or reverse-engineering a deploy
 							if err != nil {
 								fmt.Fprintf(os.Stderr, "fetch %s: %v\n", remotePath, err)
 								continue
-							}
-
-							// Collect for release snapshot (keyed by cue name).
-							if snapshotID != "" {
-								snapshotFiles[cr.Name] = data
 							}
 
 							if archive {
@@ -132,14 +118,8 @@ Useful for disaster recovery, new machine setup, or reverse-engineering a deploy
 						}
 					}
 
-					// Write release snapshot from the collected files.
 					if snapshotID != "" {
-						localDir := cfg.Release.LocalDir
-					if localDir == "" {
-						localDir = ".regis-releases"
-					}
-					runner.WriteSnapshot(localDir, snapshotID, snapshotManifestRaw, snapshotFiles)
-						fmt.Printf("snapshot  %s/%s  (%d files)\n", cfg.Release.Dir, snapshotID, len(snapshotFiles))
+						fmt.Printf("state  %s  (fetch complete)\n", snapshotID)
 					}
 				}()
 			}

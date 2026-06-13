@@ -196,7 +196,7 @@ scenarios:
 	}
 }
 
-// ── rollback: defer ───────────────────────────────────────────────────────────
+// ── restore: defer ───────────────────────────────────────────────────────────
 
 func TestValidateYAML_rollbackDefer_valid(t *testing.T) {
 	cfg := mustLoad(t, `
@@ -205,11 +205,11 @@ scenarios:
     cues:
       - name: install-deps
         shell: composer install
-        rollback: defer
+        restore: defer
 `)
 	cr := cfg.Scenarios["deploy"].Cues[0]
-	if cr.Rollback == nil || !cr.Rollback.Defer {
-		t.Errorf("want Defer=true, got %+v", cr.Rollback)
+	if cr.Restore == nil || !cr.Restore.Defer {
+		t.Errorf("want Defer=true, got %+v", cr.Restore)
 	}
 }
 
@@ -222,7 +222,7 @@ scenarios:
         nature: pack
         src: vendor/**
         dest: ./
-        rollback: defer
+        restore: defer
 `)
 	if !strings.Contains(msg, "shell:") {
 		t.Errorf("expected 'shell:' in error message, got %q", msg)

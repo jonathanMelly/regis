@@ -53,9 +53,9 @@ func rdiffSymbol(r cue.Result) string {
 	return "↓"
 }
 
-// ManifestInfo holds release manifest data for display in rdiff output.
+// ManifestInfo holds deployment state data for display in rdiff output.
 type ManifestInfo struct {
-	Release    string
+	ID         string
 	DeployedAt time.Time
 	DeployedBy string
 }
@@ -186,7 +186,7 @@ func RenderTable(results []cue.Result, target string, total time.Duration, deplo
 	}
 	if minfo != nil && !deployed {
 		deployLine := fmt.Sprintf(" Deployed: %s  %s  %s",
-			minfo.Release,
+			minfo.ID,
 			minfo.DeployedAt.Format("2006-01-02 15:04"),
 			minfo.DeployedBy,
 		)
@@ -269,7 +269,7 @@ func CueInfoLines(r cue.Result, showDiff bool, minfo *ManifestInfo) []string {
 		if minfo != nil {
 			lines = append(lines, fmt.Sprintf("     last deployed: %s  (%s, %s)",
 				truncate(r.ManifestHash, 12),
-				minfo.Release,
+				minfo.ID,
 				minfo.DeployedAt.Format("2006-01-02 15:04"),
 			))
 		} else if r.ManifestHash != "" {

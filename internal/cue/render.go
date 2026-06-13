@@ -11,7 +11,7 @@
 // prune: true (folder mode only) deletes remote files absent from the rendered output.
 // Always runs — even during rdiff — so comparisons reflect freshly rendered content.
 // Direction: local (rendered) → remote.
-// rollback: true — restores the previous rendered file (or folder) from the local release snapshot.
+// restore: true — re-deploy previous version from git at the recorded state ref.
 package cue
 
 import (
@@ -39,7 +39,7 @@ func (e *RenderExecutor) Execute(ctx context.Context, conn SSHConn, cr config.Cu
 	r := Result{
 		CueName:        cr.Name,
 		Nature:         "render",
-		AffectsRelease: true,
+		AffectsState: true,
 	}
 
 	isFolder := strings.HasSuffix(cr.Dest, "/")

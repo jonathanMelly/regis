@@ -193,7 +193,7 @@ func TestRenderExecutor_nature_and_release_affecting(t *testing.T) {
 	if r.Nature != "render" {
 		t.Errorf("want Nature=render, got %q", r.Nature)
 	}
-	if r.Status == cue.StatusChanged && !r.IsReleaseAffecting() {
+	if r.Status == cue.StatusChanged && !r.IsStateAffecting() {
 		t.Error("changed render cue must be release-affecting")
 	}
 }

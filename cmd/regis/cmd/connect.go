@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 
-	"gopkg.in/yaml.v3"
 	"git.disroot.org/jmy/regis/internal/config"
 	"git.disroot.org/jmy/regis/internal/cue"
 	"git.disroot.org/jmy/regis/internal/output"
@@ -47,8 +46,9 @@ func connectTarget(gf *GlobalFlags, tgt *config.Target, spinner *output.Spinner)
 }
 
 // buildBaseCtx sets up the common context for a target:
-// manifest download + populateRemoteFiles + WithLocalDir + WithDebugWriter.
-// Returns the updated context and optional ManifestInfo (nil when no manifest found).
+// state download + populateRemoteFiles + WithLocalDir + WithDebugWriter.
+// Returns the updated context and optional ManifestInfo (nil when no state found).
+// Tries .regis-state (new) then .regis-release (legacy) via LoadRemoteState.
 func buildBaseCtx(gf *GlobalFlags, conn cue.SSHConn, tgt config.Target, cfg *config.Config) (context.Context, *output.ManifestInfo) {
 	ctx := context.Background()
 	if gf.Debug {
@@ -57,20 +57,25 @@ func buildBaseCtx(gf *GlobalFlags, conn cue.SSHConn, tgt config.Target, cfg *con
 
 	var minfo *output.ManifestInfo
 	if conn != nil {
-		if data, dlErr := conn.Download(tgt.Dir + "/.regis-release"); dlErr == nil {
-			var m runner.ReleaseManifest
-			if parseErr := yaml.Unmarshal(data, &m); parseErr == nil {
-				minfo = &output.ManifestInfo{
-					Release:    m.Release,
-					DeployedAt: m.DeployedAt,
-					DeployedBy: m.DeployedBy,
-				}
-				ctx = cue.WithManifest(ctx, &cue.Manifest{
-					Release:    m.Release,
-					DeployedBy: m.DeployedBy,
-					Hashes:     m.Hashes,
-				})
+		if state, err := runner.LoadRemoteState(conn, tgt.Dir); err == nil {
+			minfo = &output.ManifestInfo{
+				ID:    state.ID,
+				DeployedAt: state.DeployedAt,
+				DeployedBy: state.DeployedBy,
 			}
+			// Build per-cue hash map for binary drift detection (ManifestDrift field).
+			// Uses the single-file hash for single-file cues (binary, config, secret, render).
+			hashes := make(map[string]string)
+			for cueName, cs := range state.Cues {
+				if fs, ok := cs.Files[cueName]; ok && fs.Hash != "" {
+					hashes[cueName] = fs.Hash
+				}
+			}
+			ctx = cue.WithManifest(ctx, &cue.Manifest{
+				ID:    state.ID,
+				DeployedBy: state.DeployedBy,
+				Hashes:     hashes,
+			})
 		}
 	}
 
@@ -80,12 +85,12 @@ func buildBaseCtx(gf *GlobalFlags, conn cue.SSHConn, tgt config.Target, cfg *con
 }
 
 // buildDispatch constructs a runner.Dispatch for tgt.
-// withReleaseDir=true wires the Pack executor's release dir (run mode only).
-func buildDispatch(conn cue.SSHConn, cfg *config.Config, tgt *config.Target, gf *GlobalFlags, withReleaseDir bool) runner.Dispatch {
+// withStateDir=true wires the Pack executor's state dir (run mode only).
+func buildDispatch(conn cue.SSHConn, cfg *config.Config, tgt *config.Target, gf *GlobalFlags, withStateDir bool) runner.Dispatch {
 	env, _ := config.BuildEnvForTarget(cfg, tgt)
 	pack := cue.NewPackExecutor(conn)
-	if withReleaseDir {
-		pack = pack.WithReleaseDir(cfg.Release.Dir, gf.Yes)
+	if withStateDir {
+		pack = pack.WithStateDir(cfg.State.Dir, gf.RunWithoutCheck)
 	}
 	return runner.Dispatch{
 		BulkConn: conn,

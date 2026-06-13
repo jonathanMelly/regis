@@ -219,7 +219,7 @@ func newRunCommand(gf *GlobalFlags) *cobra.Command {
 					backupPath := path.Join(path.Dir(cleanDir), path.Base(cleanDir)+"-bak-"+ts+".tar.gz")
 
 					spinner.Stop()
-					if !gf.Yes {
+					if !gf.RunWithoutCheck {
 						fmt.Printf("\nfresh deploy on %s: all files in %s will be deleted\n", tgtName, cleanDir)
 						fmt.Printf("backup → %s\n", backupPath)
 						fmt.Printf("proceed? [y/N] ")
@@ -244,7 +244,7 @@ func newRunCommand(gf *GlobalFlags) *cobra.Command {
 					}
 					if bCode != 0 {
 						fmt.Fprintf(os.Stderr, "warn: backup failed (exit %d): %s\n", bCode, bErr)
-						if !gf.Yes {
+						if !gf.RunWithoutCheck {
 							fmt.Printf("backup failed — continue with wipe anyway? [y/N] ")
 							var ans string
 							fmt.Scan(&ans)
@@ -281,11 +281,13 @@ func newRunCommand(gf *GlobalFlags) *cobra.Command {
 
 				runOpts := runner.Options{
 					DryRun:        gf.DryRun,
-					SkipConfirm:   gf.Yes,
+					SkipConfirm:   gf.RunWithoutCheck,
 					NatureFilter:  ParseNatureFilter(nature),
 					PruneReleases: pruneReleases,
 					ForceManifest: forceManifest,
 					ScopedCues:    scopedCues,
+					AllowDirty:    gf.AllowDirty,
+					NoGit:         gf.NoGit,
 				}
 
 				// Level2: live TUI with browse after deploy.
@@ -336,6 +338,6 @@ func newRunCommand(gf *GlobalFlags) *cobra.Command {
 	c.Flags().BoolVarP(&secretOnly, "secrets", "s", false, "shorthand for --nature secret")
 	c.Flags().BoolVar(&pruneReleases, "prune-releases", false, "prune old releases (remote + local) after deploy")
 	c.Flags().BoolVar(&fresh, "fresh", false, "backup then wipe target dir before deploying (prompts for confirmation)")
-	c.Flags().BoolVar(&forceManifest, "force-manifest", false, "write release manifest even when nothing changed (useful after manual file sync)")
+	c.Flags().BoolVar(&forceManifest, "force-manifest", false, "[deprecated] state is always written; no-op")
 	return c
 }

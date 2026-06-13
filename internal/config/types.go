@@ -17,7 +17,7 @@ type Config struct {
 	Post        []PrePost           `yaml:"post"`
 	Includes    []string            `yaml:"includes"`
 	Run         RunConfig           `yaml:"run"`
-	Release     ReleaseConfig       `yaml:"release"`
+	State       StateConfig         `yaml:"state"`
 	Concurrency ConcurrencyConfig   `yaml:"concurrency"`
 
 	// ScenarioNames preserves YAML declaration order (not from YAML tag; set by UnmarshalYAML).
@@ -48,11 +48,11 @@ type RunConfig struct {
 	OnError     string `yaml:"on_error"`     // doc: Reaction on error: rollback | halt | continue (default: halt)
 }
 
-type ReleaseConfig struct {
-	Enabled  *bool  `yaml:"enabled"`   // doc: Assign a release ID per deploy, archive files locally and remotely — enables rollback; false = live deploy, no history (default: true)
-	Dir      string `yaml:"dir"`       // doc: Remote archive directory for rollback snapshots; default <target.dir>/.regis-releases
-	LocalDir string `yaml:"local_dir"` // doc: Local directory for release manifests and rollback snapshots (default: .regis-releases)
-	Keep     int    `yaml:"keep"`      // doc: Release snapshots to retain for rollback when --prune-releases is used (default 5)
+type StateConfig struct {
+	Enabled  *bool  `yaml:"enabled"`    // doc: Record deployment state after each deploy (default: true)
+	Dir      string `yaml:"dir"`        // doc: Remote directory for legacy file archives; default <target.dir>/.regis-states (rarely needed)
+	LocalDir string `yaml:"local_dir"`  // doc: Local directory for state records (default: .regis-states)
+	Keep     int    `yaml:"keep"`       // doc: State records to retain when --prune is used (default 5)
 }
 
 type ConcurrencyConfig struct {
@@ -97,26 +97,27 @@ type WhenExpr struct {
 type Scenario struct {
 	Describe    string            // doc: Human-readable label shown in output
 	Env         map[string]string // doc: Env vars for all cues in this scenario; overrides defaults.env, overridden by cue-level env
-	Post        PostAction        // doc: Remote command (or restart:/reload: shorthand) run once if any remote cue changed
-	Requires    StringOrList      // doc: Scenario names that must complete first (alias: needs) — deduplicated
-	Cues        []CueRef          // doc: Ordered list of cues or scenario references
+	Post         PostAction        // doc: Remote command (or restart:/reload: shorthand) run once if any remote cue changed
+	Requires     StringOrList      // doc: Scenario names that must complete first (alias: needs) — deduplicated
+	RollbackHint string            // doc: Hint shown by 'regis state hint' — describes how to roll back this scenario. Supports {prev_sha} placeholder.
+	Cues         []CueRef          // doc: Ordered list of cues or scenario references
 	Checks      []CueRef          // doc: Terminal acceptance phase — read-only probes, run after cues complete
-	Rollback    []CueRef          // doc: Actions run on the remote after file-snapshot restore when on_error: rollback triggers; ${RELEASE_ID} is available
+	Restore     []CueRef          // doc: Actions run on the remote after file-snapshot restore when on_error: restore triggers; ${DEPLOY_ID} is available
 	SuccessWhen string            // doc: Override for run.success_when: auto | command | service | checks
-	OnError     string            // doc: Override for run.on_error: rollback | halt | continue (default: halt)
+	OnError     string            // doc: Override for run.on_error: restore | halt | continue (default: halt)
 	SourceFile  string            // which file this came from (set during load)
 }
 
-// CueRollback declares the compensation to execute when on_error: rollback triggers
+// CueRestore declares the compensation to execute when on_error: restore triggers
 // and this cue had already executed.
-// File natures (binary/config/secret/render/pack): rollback: true restores the
-// previous remote state from the local release snapshot.
-// Action natures: rollback: "shell cmd" or {shell, sudo} runs a compensation command.
-// rollback: defer skips the reverse-order compensation phase and re-executes the
+// File natures (binary/config/secret/render/pack): restore: true re-deploys the
+// previous state from the local snapshot.
+// Action natures: restore: "shell cmd" or {shell, sudo} runs a compensation command.
+// restore: defer skips the reverse-order compensation phase and re-executes the
 // cue's shell command after all per-cue file restores complete.
 // Custom UnmarshalYAML handles the polymorphic forms.
-type CueRollback struct {
-	Enabled bool   // true = rollback active for this cue
+type CueRestore struct {
+	Enabled bool   // true = restore active for this cue
 	Shell   string // compensation shell command (action natures only)
 	Sudo    bool   // run compensation with sudo
 	Defer   bool   // skip reverse compensation; re-run cue shell after file restores
@@ -143,7 +144,7 @@ type CueRef struct {
 	Preserve        StringOrList      // doc: Remote keys never overwritten during merge (secret only)
 	Mode            string            // doc: Remote file permissions, e.g. "600"
 	If              string            // doc: Boolean rule or probe — skip cue when false
-	AffectsRelease  bool              // doc: Mark remote action cue as release-affecting (default false for actions)
+	AffectsState  bool              // doc: Mark remote action cue as release-affecting (default false for actions)
 	ChangedWhen     WhenExpr          // doc: Override change detection — defaults: binary/config/secret/render=MD5 diff, action=always changed, generate=always equal; expressions: "stdout contains X", "stdout !contains X", "stderr contains X", "exit == N", "exit != N"; or changed_when: true to force
 	FailedWhen      WhenExpr          // doc: Override failure detection — defaults: action/generate=exit != 0, binary/config/secret=upload error; expressions: "exit != 0", "stdout contains ERROR", "stderr !contains OK"
 	ContinueOnError bool              // doc: true = cue failure does not halt deployment (default false)
@@ -159,5 +160,6 @@ type CueRef struct {
 	ServiceFile string            // doc: Local path to systemd unit file; uploaded to /etc/systemd/system/<name>.service when changed
 	Health      string            // doc: Health-check command (crontab watchdog)
 	Commands    map[string]string // doc: Override or extend manager commands (start, stop, restart, reload, deploy, status). Template vars: {name}, {binary}, {dir}, {service_file}. Action refs: {restart}, {reload}, etc. expand to the pre-override base command
-	Rollback    *CueRollback      // doc: Per-cue compensation on rollback — rollback: true restores previous file state for file natures; rollback: "cmd" or {shell, sudo} runs a command for action natures; rollback: defer re-executes the cue shell after all per-cue file restores complete; infers on_error: rollback for the scenario
+	Restore      *CueRestore       // doc: Per-cue compensation on restore — restore: true re-deploys previous file state; restore: "cmd" or {shell, sudo} runs a command for action natures; restore: defer re-executes the cue shell after file restores; infers on_error: restore for the scenario
+	RollbackHint string            // doc: Hint shown by 'regis state hint' for this cue — e.g. DB migration reversal command. Supports {prev_sha} placeholder.
 }

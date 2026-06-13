@@ -2,7 +2,7 @@
 // doc:nature secret
 // Uploads an env file. Values are masked in all output. preserve: lists keys never overwritten.
 // Direction: local→remote.
-// rollback: true — restores the previous secret file from the local release snapshot.
+// restore: true — re-deploy previous version from git at the recorded state ref.
 package cue
 
 import (
@@ -25,7 +25,7 @@ func NewSecretExecutor(conn SSHConn) *SecretExecutor { return &SecretExecutor{co
 // Execute downloads remote .env, merges with local (preserving listed keys), uploads merged content.
 func (e *SecretExecutor) Execute(ctx context.Context, conn SSHConn, cr config.CueRef, target config.Target) (Result, error) {
 	start := time.Now()
-	r := Result{CueName: cr.Name, Nature: "secret", AffectsRelease: true}
+	r := Result{CueName: cr.Name, Nature: "secret", AffectsState: true}
 
 	if e.conn == nil {
 		r.Status = StatusFailed
