@@ -23,7 +23,7 @@
 | `user` | string | — | SSH login user |
 | `port` | string | `22` | SSH port (default 22); accepts ${VAR} for env-driven port |
 | `dir` | string | — | Remote working directory; relative dest paths anchor here |
-| `sudo` | bool | `false` | Global sudo default for this target; overridable per cue |
+| `sudo` | bool | — | Global sudo default for this target; overridable per cue |
 | `dotenv` | string | — | Explicit env file path; overrides auto-discovery of .env.<name> |
 | `password` | string | — | SSH password (fallback when public-key auth fails); accepts ${VAR} — use password: ${APP_PASSWORD} and inject via .env or shell env |
 
@@ -518,15 +518,15 @@ rebuild checkpoint, skipping the broken state.
 | command | description |
 |---------|-------------|
 | `regis adopt` | create a state record from the current remote (no deploy) |
-| `regis ai` | output embedded regis schema context for AI-assisted regis.yml authoring |
 | `regis check [state-id]` | verify target files against the recorded deployment state |
 | `regis config` | interactive config wizard — add/edit targets, scenarios, services |
 | `regis env` | show env files and variable sources for a target |
 | `regis exec "<command>"` | run a raw SSH command on the target (escape hatch) |
 | `regis fetch` | download remote artifacts to local source paths (or .regis/fetched/ with --archive) |
 | `regis hint [state-id]` | show recovery guidance for a state |
+| `regis rtf` | output embedded regis reference (schema, CLI, concepts) — useful as AI context |
 | `regis run [scenario[,scenario...]]` | run one or more scenarios (omit to run all; also: regis <scenario> directly) |
-| `regis schema` | print the regis.yml schema reference |
+| `regis schema` | write the annotated regis.yml schema to regis-schema.yml |
 | `regis score [scenario,...]` | show scenario/cue structure and dependencies |
 | `regis service` | manage services on the target (start, stop, restart, reload, enable, disable, logs) |
 | `regis show` | show the live deployment state on the target |

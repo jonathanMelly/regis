@@ -1,4 +1,4 @@
-// cmd/regis/cmd/ai_test.go
+// cmd/regis/cmd/rtf_test.go
 package cmd_test
 
 import (
@@ -11,12 +11,12 @@ import (
 	"git.disroot.org/jmy/regis/cmd/regis/cmd"
 )
 
-func TestAICommand_OutputsMarkdown(t *testing.T) {
+func TestRTFCommand_OutputsMarkdown(t *testing.T) {
 	root := cmd.NewRootCommand("dev")
 	var buf bytes.Buffer
 	root.SetOut(&buf)
 	root.SetErr(&buf)
-	root.SetArgs([]string{"ai", "--stdout"})
+	root.SetArgs([]string{"rtf", "--stdout"})
 
 	err := root.Execute()
 	if err != nil {
@@ -29,12 +29,12 @@ func TestAICommand_OutputsMarkdown(t *testing.T) {
 	}
 }
 
-func TestAICommand_ContainsSchemaSection(t *testing.T) {
+func TestRTFCommand_ContainsSchemaSection(t *testing.T) {
 	root := cmd.NewRootCommand("dev")
 	var buf bytes.Buffer
 	root.SetOut(&buf)
 	root.SetErr(&buf)
-	root.SetArgs([]string{"ai", "--stdout"})
+	root.SetArgs([]string{"rtf", "--stdout"})
 
 	err := root.Execute()
 	if err != nil {
@@ -49,12 +49,12 @@ func TestAICommand_ContainsSchemaSection(t *testing.T) {
 	}
 }
 
-func TestAICommand_ContainsExamples(t *testing.T) {
+func TestRTFCommand_ContainsExamples(t *testing.T) {
 	root := cmd.NewRootCommand("dev")
 	var buf bytes.Buffer
 	root.SetOut(&buf)
 	root.SetErr(&buf)
-	root.SetArgs([]string{"ai", "--stdout"})
+	root.SetArgs([]string{"rtf", "--stdout"})
 
 	err := root.Execute()
 	if err != nil {
@@ -67,12 +67,12 @@ func TestAICommand_ContainsExamples(t *testing.T) {
 	}
 }
 
-func TestAICommand_StdoutFlag(t *testing.T) {
+func TestRTFCommand_StdoutFlag(t *testing.T) {
 	root := cmd.NewRootCommand("dev")
 	var buf bytes.Buffer
 	root.SetOut(&buf)
 	root.SetErr(&buf)
-	root.SetArgs([]string{"ai", "--stdout"})
+	root.SetArgs([]string{"rtf", "--stdout"})
 
 	err := root.Execute()
 	if err != nil {
@@ -84,7 +84,7 @@ func TestAICommand_StdoutFlag(t *testing.T) {
 	}
 }
 
-func TestAICommand_OutputFlag(t *testing.T) {
+func TestRTFCommand_OutputFlag(t *testing.T) {
 	dir := t.TempDir()
 	outFile := filepath.Join(dir, "custom.md")
 
@@ -101,7 +101,7 @@ func TestAICommand_OutputFlag(t *testing.T) {
 	var buf bytes.Buffer
 	root.SetOut(&buf)
 	root.SetErr(&buf)
-	root.SetArgs([]string{"ai", "--output", outFile})
+	root.SetArgs([]string{"rtf", "--output", outFile})
 
 	err = root.Execute()
 	if err != nil {
@@ -120,36 +120,27 @@ func TestAICommand_OutputFlag(t *testing.T) {
 	}
 }
 
-func TestAICommand_DefaultOutputFile(t *testing.T) {
+func TestRTFCommand_DefaultOutputFile(t *testing.T) {
 	dir := t.TempDir()
-
-	origDir, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chdir(dir); err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = os.Chdir(origDir) }()
+	outFile := filepath.Join(dir, "regis-rtf.md")
 
 	root := cmd.NewRootCommand("dev")
 	var buf bytes.Buffer
 	root.SetOut(&buf)
 	root.SetErr(&buf)
-	root.SetArgs([]string{"ai"})
+	root.SetArgs([]string{"rtf", "--output", outFile})
 
-	err = root.Execute()
+	err := root.Execute()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	defaultPath := filepath.Join(dir, "regis-ai.md")
-	content, err := os.ReadFile(defaultPath)
+	content, err := os.ReadFile(outFile)
 	if err != nil {
-		t.Fatalf("expected default output file regis-ai.md to exist: %v", err)
+		t.Fatalf("expected output file regis-rtf.md to exist: %v", err)
 	}
 	if len(content) == 0 {
-		t.Error("expected regis-ai.md to have content, got empty")
+		t.Error("expected regis-rtf.md to have content, got empty")
 	}
 }
 

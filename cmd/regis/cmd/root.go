@@ -65,7 +65,7 @@ No daemon. No agent. No cloud dependency.`,
 		newConfigCommand(&gf),
 		newEnvCommand(&gf),
 		newSchemaCommand(&gf),
-		newAICommand(&gf),
+		newRTFCommand(&gf),
 	)
 
 	root.Args = cobra.ArbitraryArgs

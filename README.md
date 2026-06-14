@@ -7,7 +7,7 @@ One `regis.yml`, any environment. Deploy without drama.
 ## What it does
 
 regis reads `regis.yml` and applies your environment state — binaries, configs, secrets, and
-services — locally or over SSH, with optional service management built in.
+services — locally or over SSH.
 No daemon. No agent. No cloud dependency.
 
 ## Install
@@ -16,7 +16,7 @@ No daemon. No agent. No cloud dependency.
 
 Or build from source:
 
-    git clone https://git.disroot.org/jmy/regis
+    git clone git.disroot.org/jmy/regis
     cd regis
     task build   # requires go-task
 
@@ -25,15 +25,18 @@ Or build from source:
     cp .env.local.example .env.local   # edit with SSH credentials and paths
     regis env                          # verify variables resolve correctly
     regis score                        # visualise the deployment DAG
-    regis full -n                      # dry run — show what would happen
-    regis full                         # deploy
+    regis full                         # check phase runs first, then deploy
+
+Before every deploy, regis runs a **check phase**: it diffs each cue against the remote,
+shows what would change, and asks you to confirm. Skip it with `--run-without-check` in CI.
 
 ## Generate regis.yml with AI help
 
-    regis ai > regis-ai.md
-    # Give regis-ai.md + your project files (Taskfile.yml, deploy scripts, go.mod) to an AI
+    regis rtf
+    # Give regis-rtf.md + your project files (Taskfile.yml, deploy scripts, go.mod) to an AI
 
-The AI reads the schema context and generates a `regis.yml` for your project.
+The AI reads the schema context and generates a `regis.yml` for your project. You review it.
+You own it.
 
 ## Per-target environments
 
@@ -43,30 +46,32 @@ The AI reads the schema context and generates a `regis.yml` for your project.
 
     regis env --target prod       # show resolved variables for prod
 
-## Commands
+## "I like running my deploy commands manually. It keeps me in control."
 
-| Command | Description |
-|---------|-------------|
-| `regis <scenario>` | Run a named scenario |
-| `regis full` | Run the built-in full-deploy scenario |
-| `regis env` | Show dotenv files loaded and how variables resolve |
-| `regis ai` | Output embedded schema context for AI-assisted authoring |
-| `regis score` | Visualise the deployment DAG (ASCII + Mermaid) |
-| `regis rdiff` | Show what would change on the target |
-| `regis fetch` | Download files from the target |
-| `regis ssh` | Open an interactive SSH session |
-| `regis service` | Manage services on the target |
-| `regis release` | Manage release directories |
-| `regis config` | Show parsed and merged configuration |
+Liar.
 
-## Flags
+Manual means reconstructing the sequence from memory each time, guessing which services need
+restarting after a config change, and hoping the environment on prod matches what you tested
+with. The command history in your shell is not a deploy plan.
 
-    -f, --file     config file (default: regis.yml)
-        --target   target selector: name, comma-list, glob, or "all"
-    -n, --dry-run  show what would happen without executing
-    -y, --yes      skip confirmation prompts (CI mode)
-    -v, --verbose  show all cues including unchanged
-    -q, --quiet    errors and summary only
+regis is the sequence — written down, version-controlled, and reviewable before it runs. The
+check phase shows every change before it happens. `regis score` draws the dependency graph.
+`regis env --target prod` shows every variable and where it came from. You have more visibility
+into your deploy with regis than you ever did from the shell prompt.
+
+## My bash deploy script works. It's just grown to 300 lines.
+
+The real problem isn't the size — it's that the script can't tell what's already deployed.
+So it either re-runs everything on every invocation (slow, risky) or it grows ad-hoc state
+checks that become the most brittle part of the file.
+
+regis knows what's deployed. Each cue compares local against remote — MD5 for binaries, text
+diff for configs — and skips what hasn't changed. Post-actions deduplicate: five cues all
+declaring `post: reload:nginx` fire exactly one reload. On failure, compensation runs in
+reverse order. `regis state check` tells you whether what's on the server still matches what
+you intended to put there.
+
+The script retires. The YAML stays.
 
 ## I have git on prod, why just not use that?
 
@@ -109,6 +114,16 @@ while the same scenario also handles secrets, rendered output, and services that
 
 In short: if your entire deploy is repo-tracked files, git pull is fine. The moment it also
 involves secrets, build artifacts, or services, regis handles the parts git cannot.
+
+## Reference
+
+Full schema and CLI reference: [docs/regis-ai-context.md](docs/regis-ai-context.md)
+
+    -f, --file              config file (default: regis.yml)
+        --target            target selector: name, comma-list, glob, or "all"
+        --run-without-check skip check phase — CI/automation
+    -v, --verbose           show unchanged cues and full command output
+    -q, --quiet             errors and summary only
 
 ## Docs
 

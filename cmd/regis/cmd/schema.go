@@ -2,6 +2,7 @@
 package cmd
 
 import (
+	"fmt"
 	"os"
 
 	regis "git.disroot.org/jmy/regis"
@@ -9,23 +10,33 @@ import (
 )
 
 func newSchemaCommand(gf *GlobalFlags) *cobra.Command {
+	var stdout bool
 	var output string
 
 	c := &cobra.Command{
 		Use:   "schema",
-		Short: "print the regis.yml schema reference",
-		Long: `regis schema prints a quick reference for all regis.yml fields,
-nature types, and an annotated example.
+		Short: "write the annotated regis.yml schema to regis-schema.yml",
+		Long: `regis schema writes the annotated regis.yml schema to regis-schema.yml.
 
-By default output goes to stdout. Use --output to write to a file.`,
+All fields are shown with types, defaults, and inline comments.
+Use --stdout to print to stdout, or --output to write to a custom path.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if output == "" {
+			if stdout {
 				_, err := cmd.OutOrStdout().Write(regis.SchemaDoc)
 				return err
 			}
-			return os.WriteFile(output, regis.SchemaDoc, 0644)
+			outPath := output
+			if outPath == "" {
+				outPath = "regis-schema.yml"
+			}
+			if err := os.WriteFile(outPath, regis.SchemaDoc, 0644); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "%s written — have a look with your favourite editor\n", outPath)
+			return nil
 		},
 	}
-	c.Flags().StringVarP(&output, "output", "o", "", "write to file instead of stdout")
+	c.Flags().BoolVar(&stdout, "stdout", false, "write to stdout instead of a file")
+	c.Flags().StringVarP(&output, "output", "o", "", "output file path (default: regis-schema.yml)")
 	return c
 }

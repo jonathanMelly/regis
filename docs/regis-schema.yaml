@@ -5,7 +5,7 @@ targets:
   - name: ""                                  # mandatory — Unique identifier; drives auto-discovery of .env.<name>
     host: ""                                  # mandatory — SSH hostname or IP; accepts ${VAR}
     user: ""                                  # SSH login user
-    port: 22                                  # SSH port (default 22); accepts ${VAR} for env-driven port
+    port: 22                                  # SSH port
     dir: ""                                   # Remote working directory; relative dest paths anchor here
     sudo: false                               # Global sudo default for this target; overridable per cue
     dotenv: ""                                # Explicit env file path; overrides auto-discovery of .env.<name>
@@ -24,7 +24,7 @@ scenarios:
     requires: []                              # Scenario names that must complete first (alias: needs) — deduplicated
     compensation_hint: ""                     # Hint shown by 'regis state hint' — describes how to roll back this scenario. Supports {prev_sha} placeholder.
     success_when: auto                        # auto|command|service|checks — Override for run.success_when
-    on_error: compensate                      # compensate|halt|continue — Override for run.on_error
+    on_error: halt                            # compensate|halt|continue — Override for run.on_error
     cues:
       - name: ""                              # mandatory — Unique within the scenario
         nature: binary                        # mandatory — binary|config|secret|action|generate|render|pack|service — inferred when manager: is set (→ service) or git: true (→ pack)
@@ -41,10 +41,10 @@ scenarios:
         preserve: []                          # Remote keys never overwritten during merge (secret only)
         mode: ""                              # Remote file permissions, e.g. "600"
         if: ""                                # Boolean rule or probe — skip cue when false
-        affects_state: false                  # Mark remote action cue as state-affecting so it is recorded in the deploy state (default false for actions)
+        affects_state: false                  # Mark remote action cue as state-affecting so it is recorded in the deploy state
         changed_when: ""                      # Override change detection — defaults: binary/config/secret/render=MD5 diff, action=always changed, generate=always equal; expressions: "stdout contains X", "stdout !contains X", "stderr contains X", "exit == N", "exit != N"; or changed_when: true to force
         failed_when: ""                       # Override failure detection — defaults: action/generate=exit != 0, binary/config/secret=upload error; expressions: "exit != 0", "stdout contains ERROR", "stderr !contains OK"
-        continue_on_error: false              # true = cue failure does not halt deployment (default false)
+        continue_on_error: false              # true = cue failure does not halt deployment
         sudo: false                           # Per-cue sudo override
         # ── pack / config / render: diff control ──
         diff_mode: binary                     # auto|text|binary — pack default: binary; config/render default: auto
@@ -82,7 +82,7 @@ state:
   enabled: true                               # Record deployment state after each deploy
   dir: /opt/app/.regis-states                 # Remote directory for legacy file archives; default <target.dir>/.regis-states (rarely needed)
   local_dir: .regis-states                    # Local directory for state records
-  keep: 5                                     # State records to retain when --prune is used (default 5)
+  keep: 5                                     # State records to retain when --prune is used
 
 concurrency:
   lock: true                                  # Enable deploy lock to prevent concurrent deploys

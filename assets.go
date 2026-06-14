@@ -3,10 +3,10 @@ package regis
 
 import _ "embed"
 
-// AIContext is the condensed regis schema reference for AI-assisted authoring.
+// RTFContext is the full regis reference — schema, CLI, and concepts — useful as AI context.
 //
 //go:embed docs/regis-ai-context.md
-var AIContext []byte
+var RTFContext []byte
 
 // SchemaDoc is the dense annotated YAML schema reference for regis.yml.
 //

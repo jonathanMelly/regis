@@ -58,36 +58,13 @@ const (
 
 
 
-// defaults maps "StructName.FieldName" -> default value string for the table.
-
+// defaults maps "StructName.FieldName" -> default value string for the schema.
+// Only needed when the value cannot be extracted from the "(default: X)" annotation
+// in the field's doc comment. Most defaults live there; add an entry here only as
+// an explicit override (e.g. when the doc expresses context-dependent defaults).
 var defaults = map[string]string{
-
-	"Target.Port":           "22",
-
-	"Target.Sudo":           "false",
-
-	"RunConfig.Mode":        "sequential",
-
-	"RunConfig.OnFailure":   "halt",
-
-	"RunConfig.SuccessWhen": "auto",
-
-	"RunConfig.OnError":     "halt",
-
-	"StateConfig.Enabled":  "true",
-
-	"StateConfig.LocalDir": ".regis-states",
-
-	"StateConfig.Keep":    "5",
-
-	"ConcurrencyConfig.Lock":     "true",
-
-	"ConcurrencyConfig.OnLocked": "fail",
-
-	"ConcurrencyConfig.LockWait": "30s",
-
+	// doc says "pack default: binary; config/render default: auto" — no single value
 	"CueRef.DiffMode": "binary",
-
 }
 
 
@@ -615,11 +592,25 @@ func schemaComment(fi fieldInfo, mandatory bool) string {
 	return strings.Join(parts, " — ")
 }
 
+// extractDocDefault pulls the value from a "(default: X)" or "(default X)" annotation.
+func extractDocDefault(doc string) string {
+	i := strings.Index(doc, "(default")
+	if i < 0 {
+		return ""
+	}
+	rest := strings.TrimLeft(doc[i+len("(default"):], ": ")
+	j := strings.Index(rest, ")")
+	if j < 0 {
+		return ""
+	}
+	return strings.TrimSpace(rest[:j])
+}
+
 // schemaShortDoc strips alternatives and default hints from a doc string,
 // leaving only the human description.
 func schemaShortDoc(doc string) string {
-	// Strip " (default: x)" suffix
-	if i := strings.Index(doc, " (default:"); i >= 0 {
+	// Strip " (default: x)" or " (default x)" suffix
+	if i := strings.Index(doc, " (default"); i >= 0 {
 		doc = doc[:i]
 	}
 	// "description: opt1 | opt2" → strip ": opt1 | opt2"
@@ -1503,6 +1494,9 @@ func extractStructs(f *ast.File) map[string][]fieldInfo {
 				goTyp := simplifyType(field.Type)
 
 				def := defaults[structName+"."+fieldName]
+				if def == "" {
+					def = extractDocDefault(doc)
+				}
 
 
 
