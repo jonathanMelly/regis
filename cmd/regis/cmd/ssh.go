@@ -46,9 +46,18 @@ func newSSHCommand(gf *GlobalFlags) *cobra.Command {
 			}
 			sshArgs := []string{"-p", fmt.Sprintf("%d", port)}
 			if tgt.Dir != "" {
-				dir := strings.ReplaceAll(tgt.Dir, "'", `'\''`)
+				dir := tgt.Dir
+				// ~ is not expanded inside single quotes; replace with $HOME so the
+				// remote shell expands it correctly inside double quotes.
+				if dir == "~" {
+					dir = "$HOME"
+				} else if strings.HasPrefix(dir, "~/") {
+					dir = "$HOME/" + dir[2:]
+				}
+				dir = strings.ReplaceAll(dir, `\`, `\\`)
+				dir = strings.ReplaceAll(dir, `"`, `\"`)
 				sshArgs = append(sshArgs, "-t", fmt.Sprintf("%s@%s", tgt.User, tgt.Host),
-					fmt.Sprintf("cd '%s' 2>/dev/null; exec $SHELL -l", dir))
+					fmt.Sprintf(`cd "%s" 2>/dev/null; exec $SHELL -l`, dir))
 			} else {
 				sshArgs = append(sshArgs, fmt.Sprintf("%s@%s", tgt.User, tgt.Host))
 			}
@@ -56,10 +65,44 @@ func newSSHCommand(gf *GlobalFlags) *cobra.Command {
 			sh.Stdin = os.Stdin
 			sh.Stdout = os.Stdout
 			sh.Stderr = os.Stderr
+			sh.Env = remapTERM(os.Environ())
 			return sh.Run()
 		},
 	}
 }
+
+// remapTERM replaces non-standard TERM values (ghostty, kitty, wezterm, …) with
+// xterm-256color so the remote host doesn't need a matching terminfo entry.
+// Standard values (xterm*, screen*, tmux*, vt*, linux, ansi) are left as-is.
+func remapTERM(env []string) []string {
+	out := make([]string, len(env))
+	copy(out, env)
+	for i, e := range out {
+		if !strings.HasPrefix(e, "TERM=") {
+			continue
+		}
+		val := e[5:]
+		if isSafeTERM(val) {
+			break
+		}
+		out[i] = "TERM=xterm-256color"
+		break
+	}
+	return out
+}
+
+// isSafeTERM returns true for TERM values that are present in virtually every
+// Unix terminfo database. "xterm-ghostty", "xterm-kitty" etc. start with "xterm"
+// but are NOT universally available, so we use an explicit allowlist.
+var safeTERMs = map[string]bool{
+	"xterm": true, "xterm-256color": true, "xterm-color": true, "xterm-16color": true,
+	"screen": true, "screen-256color": true,
+	"tmux": true, "tmux-256color": true,
+	"vt100": true, "vt220": true, "vt320": true,
+	"linux": true, "ansi": true, "dumb": true,
+}
+
+func isSafeTERM(term string) bool { return safeTERMs[term] }
 
 func newExecCommand(gf *GlobalFlags) *cobra.Command {
 	return &cobra.Command{
