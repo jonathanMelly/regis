@@ -3,9 +3,7 @@ package cmd
 
 import (
 	"fmt"
-	"io/fs"
 	"os"
-	"path"
 	"path/filepath"
 
 	"git.disroot.org/jmy/regis/internal/config"
@@ -61,14 +59,6 @@ func withConn(gf *GlobalFlags, fn func(*regssh.Conn, config.Target, *config.Conf
 	return fn(conn, tgt, cfg)
 }
 
-// stateConn is the SSH subset needed by state helper functions.
-type stateConn interface {
-	Run(cmd string) (stdout, stderr string, exitCode int, err error)
-	Download(remotePath string) ([]byte, error)
-	Upload(localPath, remotePath string, mode fs.FileMode, useSudo bool) error
-	UploadBytes(data []byte, remotePath string, mode fs.FileMode, useSudo bool) error
-}
-
 // effectiveStateDir returns the local state directory, defaulting to .regis-states.
 func effectiveStateDir(cfg *config.Config) string {
 	if cfg.State.LocalDir != "" {
@@ -96,15 +86,6 @@ func hashesEqual(a, b map[string]string) bool {
 		}
 	}
 	return true
-}
-
-// resolveStateDir returns cfg.State.Dir when set, or falls back to
-// <tgt.Dir>/.regis-states — the default state archive location.
-func resolveStateDir(cfg *config.Config, tgt config.Target) string {
-	if cfg.State.Dir != "" {
-		return cfg.State.Dir
-	}
-	return path.Join(tgt.Dir, ".regis-states")
 }
 
 // latestLocalStateFile returns the path to the most recent state YAML file in
