@@ -44,6 +44,8 @@ type Result struct {
 	CueName          string
 	ScenarioName     string
 	ScenarioDesc     string        // human-readable label from scenario.describe
+	GroupScenarioName string       // top-level scenario to group under for display (differs from ScenarioName for ref-expanded cues)
+	GroupScenarioDesc string       // human-readable label for GroupScenarioName
 	Nature           string        // binary | config | secret | action | generate | render
 	Status           Status
 	Size             int64         // bytes uploaded (binary/config/secret)

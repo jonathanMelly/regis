@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
@@ -73,12 +74,14 @@ func Run(ctx context.Context, cfg *config.Config, scenarioNames []string, target
 			}
 			cr.Env = mergeEnv(baseEnv, cfg.Defaults.Env, sc.Env, cr.Env)
 			steps = append(steps, Step{
-				Name:            cr.Name,
-				ScenarioName:    scName,
-				ScenarioDesc:    sc.Describe,
-				OnErrorScenario: scName,
-				CueRef:          cr,
-				IsLocal:         cr.Local || cr.Nature == "generate",
+				Name:              cr.Name,
+				ScenarioName:      scName,
+				ScenarioDesc:      sc.Describe,
+				GroupScenarioName: scName,
+				GroupScenarioDesc: sc.Describe,
+				OnErrorScenario:   scName,
+				CueRef:            cr,
+				IsLocal:           cr.Local || cr.Nature == "generate",
 			})
 		}
 	}
@@ -157,7 +160,25 @@ func Run(ctx context.Context, cfg *config.Config, scenarioNames []string, target
 	localPhase := phases[0]
 	remotePhase := phases[1]
 
+	// Build an index so results can be re-sorted to YAML declaration order before
+	// returning. SplitPhases runs local (generate) steps before remote steps, which
+	// would otherwise invert cue order within a scenario when both kinds are present.
+	stepOrder := make(map[string]int, len(steps))
+	for i, s := range steps {
+		key := s.ScenarioName + "\x00" + s.Name
+		if _, exists := stepOrder[key]; !exists {
+			stepOrder[key] = i
+		}
+	}
+
 	rr := &RunResult{Target: target}
+	defer func() {
+		sort.SliceStable(rr.Results, func(i, j int) bool {
+			ki := rr.Results[i].ScenarioName + "\x00" + rr.Results[i].CueName
+			kj := rr.Results[j].ScenarioName + "\x00" + rr.Results[j].CueName
+			return stepOrder[ki] < stepOrder[kj]
+		})
+	}()
 
 	// PHASE 1a: generate cues — always run, even in check-only (rdiff) mode.
 	// They produce artifacts (e.g. rendered config files) that downstream config cues
@@ -428,6 +449,7 @@ func expandScenarioRef(ref config.CueRef, cfg *config.Config, baseEnv map[string
 		// Unreachable after config.Validate — scenario ref existence is checked at load time.
 		return nil
 	}
+	ownerSc := cfg.Scenarios[ownerScenario]
 	var steps []Step
 	for _, cr := range sc.Cues {
 		if cr.ScenarioRef != "" {
@@ -457,12 +479,14 @@ func expandScenarioRef(ref config.CueRef, cfg *config.Config, baseEnv map[string
 		}
 		cr.Env = mergeEnv(baseEnv, cfg.Defaults.Env, sc.Env, cr.Env)
 		steps = append(steps, Step{
-			Name:            cr.Name,
-			ScenarioName:    ref.ScenarioRef, // display: show referenced scenario
-			ScenarioDesc:    sc.Describe,
-			OnErrorScenario: ownerScenario, // error handling: use composing parent
-			CueRef:          cr,
-			IsLocal:         cr.Local || cr.Nature == "generate",
+			Name:              cr.Name,
+			ScenarioName:      ref.ScenarioRef, // logical owner — used for post-actions, state, error handling
+			ScenarioDesc:      sc.Describe,
+			GroupScenarioName: ownerScenario,     // display: group under the top-level scenario
+			GroupScenarioDesc: ownerSc.Describe,
+			OnErrorScenario:   ownerScenario,
+			CueRef:            cr,
+			IsLocal:           cr.Local || cr.Nature == "generate",
 		})
 	}
 	return steps

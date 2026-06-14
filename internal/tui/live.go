@@ -304,15 +304,21 @@ func (m phaseModel) viewLive() string {
 	var groups []liveGroup
 	groupIdx := map[string]int{}
 	for i, e := range m.liveEntries {
-		sn := e.info.ScenarioName
-		label := e.info.ScenarioDesc
-		if label == "" {
-			label = sn
+		key := e.info.GroupScenarioName
+		if key == "" {
+			key = e.info.ScenarioName
 		}
-		if idx, ok := groupIdx[sn]; ok {
+		label := e.info.GroupScenarioDesc
+		if label == "" {
+			label = e.info.ScenarioDesc
+		}
+		if label == "" {
+			label = key
+		}
+		if idx, ok := groupIdx[key]; ok {
 			groups[idx].indices = append(groups[idx].indices, i)
 		} else {
-			groupIdx[sn] = len(groups)
+			groupIdx[key] = len(groups)
 			groups = append(groups, liveGroup{label: label, indices: []int{i}})
 		}
 	}
@@ -568,15 +574,22 @@ func newPhaseModel(
 	var groups []groupEntry
 	groupIdx := map[string]int{}
 	for _, r := range results {
-		label := r.ScenarioDesc
-		if label == "" {
-			label = r.ScenarioName
+		key := r.GroupScenarioName
+		if key == "" {
+			key = r.ScenarioName
 		}
-		if i, ok := groupIdx[r.ScenarioName]; ok {
+		label := r.GroupScenarioDesc
+		if label == "" {
+			label = r.ScenarioDesc
+		}
+		if label == "" {
+			label = key
+		}
+		if i, ok := groupIdx[key]; ok {
 			groups[i].rows = append(groups[i].rows, r)
 		} else {
-			groupIdx[r.ScenarioName] = len(groups)
-			groups = append(groups, groupEntry{r.ScenarioName, label, []cue.Result{r}})
+			groupIdx[key] = len(groups)
+			groups = append(groups, groupEntry{key, label, []cue.Result{r}})
 		}
 	}
 

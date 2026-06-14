@@ -114,9 +114,11 @@ func PreStepFrom(ctx context.Context) func(scenario, cue, desc string) {
 // StepInfo carries identifying details about one cue step.
 // Used by WithPrePhase to announce all upcoming steps before a parallel check begins.
 type StepInfo struct {
-	Name         string
-	ScenarioName string
-	ScenarioDesc string
+	Name              string
+	ScenarioName      string
+	ScenarioDesc      string
+	GroupScenarioName string // top-level scenario for display grouping
+	GroupScenarioDesc string
 }
 
 type prePhaseKey struct{}

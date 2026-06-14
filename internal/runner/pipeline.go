@@ -48,13 +48,15 @@ func notifyStep(ctx context.Context, step Step, suffix string) {
 
 // Step is one resolved cue within the execution plan.
 type Step struct {
-	Name             string
-	ScenarioName     string // referenced scenario name — used for display/grouping
-	ScenarioDesc     string
-	OnErrorScenario  string // scenario whose on_error applies when this step fails;
-	                        // equals ScenarioName for normal cues, parent for inline refs
-	CueRef           config.CueRef
-	IsLocal          bool
+	Name              string
+	ScenarioName      string // referenced scenario name — used for logic (post-actions, state, error handling)
+	ScenarioDesc      string
+	GroupScenarioName string // top-level scenario to display under; equals ScenarioName for direct cues, ownerScenario for ref-expanded cues
+	GroupScenarioDesc string
+	OnErrorScenario   string // scenario whose on_error applies when this step fails;
+	                         // equals ScenarioName for normal cues, parent for inline refs
+	CueRef            config.CueRef
+	IsLocal           bool
 }
 
 // Phase groups steps that run together (local or remote).
@@ -147,6 +149,8 @@ func executeSequential(
 		}
 		r.ScenarioName = step.ScenarioName
 		r.ScenarioDesc = step.ScenarioDesc
+		r.GroupScenarioName = step.GroupScenarioName
+		r.GroupScenarioDesc = step.GroupScenarioDesc
 		results = append(results, r)
 		if onResult != nil {
 			onResult(r)
@@ -187,6 +191,8 @@ func executeRemote(
 			r, err := fn(stepCtx, conn, step.CueRef, target)
 			r.ScenarioName = step.ScenarioName
 			r.ScenarioDesc = step.ScenarioDesc
+			r.GroupScenarioName = step.GroupScenarioName
+			r.GroupScenarioDesc = step.GroupScenarioDesc
 			checks[i] = checkItem{result: r, err: err}
 			if fn := cue.CheckResultFrom(checkCtx); fn != nil {
 				fn(r)
@@ -196,7 +202,7 @@ func executeRemote(
 		if fn := cue.PrePhaseFrom(checkCtx); fn != nil {
 			infos := make([]cue.StepInfo, len(steps))
 			for i, s := range steps {
-				infos[i] = cue.StepInfo{Name: s.Name, ScenarioName: s.ScenarioName, ScenarioDesc: s.ScenarioDesc}
+				infos[i] = cue.StepInfo{Name: s.Name, ScenarioName: s.ScenarioName, ScenarioDesc: s.ScenarioDesc, GroupScenarioName: s.GroupScenarioName, GroupScenarioDesc: s.GroupScenarioDesc}
 			}
 			fn(infos)
 		}
@@ -213,6 +219,8 @@ func executeRemote(
 				r, err := fn(stepCtx, conn, step.CueRef, target)
 				r.ScenarioName = step.ScenarioName
 				r.ScenarioDesc = step.ScenarioDesc
+				r.GroupScenarioName = step.GroupScenarioName
+				r.GroupScenarioDesc = step.GroupScenarioDesc
 				checks[i] = checkItem{result: r, err: err}
 				if fn := cue.CheckResultFrom(checkCtx); fn != nil {
 					fn(r)
@@ -265,6 +273,8 @@ func executeRemote(
 		}
 		r.ScenarioName = step.ScenarioName
 		r.ScenarioDesc = step.ScenarioDesc
+		r.GroupScenarioName = step.GroupScenarioName
+		r.GroupScenarioDesc = step.GroupScenarioDesc
 		results = append(results, r)
 		if onResult != nil {
 			onResult(r)
