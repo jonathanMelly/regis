@@ -1,4 +1,4 @@
-// internal/tui/rdiff.go
+// internal/tui/live.go
 package tui
 
 import (
@@ -46,11 +46,30 @@ type liveFileProgressMsg struct {
 	fullName      string
 	scanned, total int
 }
+// PhaseFunc associates a display label with a phase function.
+// The label (e.g. "check", "run") appears in the title/status line and its
+// first letter becomes the key that advances to the next phase.
+type PhaseFunc struct {
+	Label string
+	Fn    func(context.Context) ([]cue.Result, time.Duration, error)
+}
+
+func phaseGerund(label string) string {
+	switch label {
+	case "run":
+		return "running"
+	default:
+		return label + "ing"
+	}
+}
+
 type liveRunCompleteMsg struct {
-	results   []cue.Result
-	elapsed   time.Duration
-	err       error
-	confirmCh chan bool // non-nil after phase-1 check: TUI waits for user to press 'r'
+	results        []cue.Result
+	elapsed        time.Duration
+	err            error
+	confirmCh      chan bool // non-nil when a next phase is available
+	phaseLabel     string   // label of the phase that just completed
+	nextPhaseLabel string   // label of the upcoming phase (empty if none)
 }
 type liveTickMsg struct{}
 
@@ -81,21 +100,21 @@ const (
 	tabCount   tabID = 2
 )
 
-type rdiffItemKind int
+type phaseItemKind int
 
 const (
-	rdiffKindScenario       rdiffItemKind = iota
-	rdiffKindMergedScenario               // single-cue scenario — label+cue on one line
-	rdiffKindCue
+	phaseKindScenario       phaseItemKind = iota
+	phaseKindMergedScenario               // single-cue scenario — label+cue on one line
+	phaseKindCue
 )
 
-type rdiffVisItem struct {
-	kind        rdiffItemKind
+type phaseVisItem struct {
+	kind        phaseItemKind
 	scenarioIdx int
 	cueIdx      int
 }
 
-type rdiffScenario struct {
+type phaseScenario struct {
 	name        string
 	label       string
 	results     []cue.Result
@@ -108,9 +127,9 @@ type rdiffScenario struct {
 
 // ── model ────────────────────────────────────────────────────────────────────
 
-type rdiffModel struct {
-	scenarios   []rdiffScenario
-	visible     []rdiffVisItem
+type phaseModel struct {
+	scenarios   []phaseScenario
+	visible     []phaseVisItem
 	cursor      int
 	searchMode  bool
 	searchQuery string
@@ -120,9 +139,10 @@ type rdiffModel struct {
 	minfo       *output.ManifestInfo
 	width       int
 	height      int
-	quitting    bool
-	isRun       bool
-	hideSkipped bool
+	quitting       bool
+	phaseLabel     string
+	nextPhaseLabel string
+	hideSkipped    bool
 
 	// live phase
 	checking    bool
@@ -135,14 +155,14 @@ type rdiffModel struct {
 	confirming bool    // true when showing the "run? [y/N]" confirmation line
 }
 
-func (m rdiffModel) Init() tea.Cmd {
+func (m phaseModel) Init() tea.Cmd {
 	if m.checking {
 		return liveTick()
 	}
 	return nil
 }
 
-func (m rdiffModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m phaseModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -193,7 +213,7 @@ func (m rdiffModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		newM := newLiveModel(msg.results, m.target, msg.elapsed, m.verbose, m.minfo, m.isRun)
+		newM := newPhaseModel(msg.results, m.target, msg.elapsed, m.verbose, m.minfo, msg.phaseLabel, msg.nextPhaseLabel)
 		for i := range newM.scenarios {
 			newM.scenarios[i].expanded = true
 		}
@@ -232,16 +252,12 @@ func (m rdiffModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // ── live view ─────────────────────────────────────────────────────────────────
 
-func (m rdiffModel) titleLine() string {
+func (m phaseModel) titleLine() string {
 	ts := m.startedAt
 	if ts.IsZero() {
 		ts = time.Now()
 	}
-	verb := "rdiff"
-	if m.isRun {
-		verb = "run  "
-	}
-	return fmt.Sprintf("%s  %s   %s", verb, m.target, ts.Format("02.01.2006 15:04:05"))
+	return fmt.Sprintf("%-5s  %s   %s", m.phaseLabel, m.target, ts.Format("02.01.2006 15:04:05"))
 }
 
 func liveSymbol(r cue.Result, spinFrame int, done bool) string {
@@ -264,7 +280,7 @@ func liveSymbol(r cue.Result, spinFrame int, done bool) string {
 	return "?"
 }
 
-func (m rdiffModel) viewLive() string {
+func (m phaseModel) viewLive() string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "%s\n\n", m.titleLine())
 
@@ -377,11 +393,7 @@ func (m rdiffModel) viewLive() string {
 	}
 	sb.WriteString(strings.Repeat("─", ruleWidth) + "\n")
 	if len(m.liveEntries) == 0 {
-		verb := "checking"
-		if m.isRun {
-			verb = "deploying"
-		}
-		fmt.Fprintf(&sb, "%s %s…\n", verb, m.target)
+		fmt.Fprintf(&sb, "%s %s…\n", phaseGerund(m.phaseLabel), m.target)
 	} else {
 		fmt.Fprintf(&sb, "%d / %d   q quit\n", checked, len(m.liveEntries))
 	}
@@ -390,7 +402,7 @@ func (m rdiffModel) viewLive() string {
 
 // ── browse view ───────────────────────────────────────────────────────────────
 
-func (m rdiffModel) View() string {
+func (m phaseModel) View() string {
 	if m.quitting {
 		return ""
 	}
@@ -400,7 +412,7 @@ func (m rdiffModel) View() string {
 	return m.viewBrowse()
 }
 
-func (m rdiffModel) viewBrowse() string {
+func (m phaseModel) viewBrowse() string {
 	reserved := 6
 	if m.searchMode {
 		reserved = 7
@@ -425,7 +437,7 @@ func (m rdiffModel) viewBrowse() string {
 	}
 	sb.WriteString(strings.Repeat("─", ruleWidth) + "\n")
 
-	changed, equal, failed := rdiffCountResults(m.allResults())
+	changed, equal, failed := countResults(m.allResults())
 	if failed > 0 {
 		fmt.Fprintf(&sb, "%d changed · %d unchanged · %d failed   %.1fs\n",
 			changed, equal, failed, m.total.Seconds())
@@ -437,7 +449,7 @@ func (m rdiffModel) viewBrowse() string {
 	if m.searchMode {
 		fmt.Fprintf(&sb, "\n/ %s█\n", m.searchQuery)
 	} else if m.confirming {
-		fmt.Fprintf(&sb, "\nrun? [y/N]\n")
+		fmt.Fprintf(&sb, "\n%s? [y/N]\n", m.nextPhaseLabel)
 	} else {
 		var skippedHint string
 		if m.hideSkipped {
@@ -451,8 +463,8 @@ func (m rdiffModel) viewBrowse() string {
 			skippedHint = "  h hide-skipped"
 		}
 		var runHint string
-		if m.confirmCh != nil {
-			runHint = "  r run"
+		if m.confirmCh != nil && m.nextPhaseLabel != "" {
+			runHint = fmt.Sprintf("  %c %s", rune(m.nextPhaseLabel[0]), m.nextPhaseLabel)
 		}
 		fmt.Fprintf(&sb, "\n↑↓ navigate  →← tab/collapse  +/- all  / search%s%s  q quit\n", skippedHint, runHint)
 	}
@@ -480,7 +492,7 @@ func browseSymbol(r cue.Result) string {
 
 // tabBar builds the inline tab bar string for a cue with tab content.
 // Returns "" when neither tab has content (no bar shown).
-func tabBar(sc rdiffScenario, ci int, isCursor bool) string {
+func tabBar(sc phaseScenario, ci int, isCursor bool) string {
 	hasDetails := len(sc.detailLines[ci]) > 0
 	hasExec := len(sc.execLines[ci]) > 0
 	if !hasDetails && !hasExec {
@@ -529,7 +541,7 @@ func tabBar(sc rdiffScenario, ci int, isCursor bool) string {
 }
 
 // activeTabLines returns the content lines for the currently active tab of a cue.
-func activeTabLines(sc rdiffScenario, ci int) []string {
+func activeTabLines(sc phaseScenario, ci int) []string {
 	switch sc.activeTab[ci] {
 	case tabDetails:
 		return sc.detailLines[ci]
@@ -539,14 +551,15 @@ func activeTabLines(sc rdiffScenario, ci int) []string {
 	return nil
 }
 
-func newLiveModel(
+func newPhaseModel(
 	results []cue.Result,
 	target string,
 	total time.Duration,
 	verbose bool,
 	minfo *output.ManifestInfo,
-	isRun bool,
-) rdiffModel {
+	phaseLabel string,
+	nextPhaseLabel string,
+) phaseModel {
 	type groupEntry struct {
 		name  string
 		label string
@@ -567,7 +580,7 @@ func newLiveModel(
 		}
 	}
 
-	scenarios := make([]rdiffScenario, len(groups))
+	scenarios := make([]phaseScenario, len(groups))
 	for i, g := range groups {
 		n := len(g.rows)
 		detailL := make([][]string, n)
@@ -576,7 +589,7 @@ func newLiveModel(
 			detailL[j] = output.CueInfoLines(r, true, minfo)
 			execL[j] = output.CueExecLines(r, verbose)
 		}
-		scenarios[i] = rdiffScenario{
+		scenarios[i] = phaseScenario{
 			name:        g.name,
 			label:       g.label,
 			results:     g.rows,
@@ -588,23 +601,24 @@ func newLiveModel(
 		}
 	}
 
-	m := rdiffModel{
-		scenarios: scenarios,
-		target:    target,
-		total:     total,
-		verbose:   verbose,
-		minfo:     minfo,
-		isRun:     isRun,
-		width:     80,
-		height:    24,
-		startedAt: time.Now(),
+	m := phaseModel{
+		scenarios:      scenarios,
+		target:         target,
+		total:          total,
+		verbose:        verbose,
+		minfo:          minfo,
+		phaseLabel:     phaseLabel,
+		nextPhaseLabel: nextPhaseLabel,
+		width:          80,
+		height:         24,
+		startedAt:      time.Now(),
 	}
 	m.visible = m.buildVisible()
 	return m
 }
 
-func (m rdiffModel) buildVisible() []rdiffVisItem {
-	var items []rdiffVisItem
+func (m phaseModel) buildVisible() []phaseVisItem {
+	var items []phaseVisItem
 	query := strings.ToLower(m.searchQuery)
 	for si, sc := range m.scenarios {
 		scenarioMatch := query == "" ||
@@ -629,7 +643,7 @@ func (m rdiffModel) buildVisible() []rdiffVisItem {
 			if m.hideSkipped && r.Status == cue.StatusSkipped {
 				continue
 			}
-			items = append(items, rdiffVisItem{kind: rdiffKindMergedScenario, scenarioIdx: si, cueIdx: ci})
+			items = append(items, phaseVisItem{kind: phaseKindMergedScenario, scenarioIdx: si, cueIdx: ci})
 			continue
 		}
 
@@ -645,7 +659,7 @@ func (m rdiffModel) buildVisible() []rdiffVisItem {
 			continue
 		}
 
-		items = append(items, rdiffVisItem{kind: rdiffKindScenario, scenarioIdx: si, cueIdx: -1})
+		items = append(items, phaseVisItem{kind: phaseKindScenario, scenarioIdx: si, cueIdx: -1})
 		if !sc.expanded {
 			continue
 		}
@@ -656,7 +670,7 @@ func (m rdiffModel) buildVisible() []rdiffVisItem {
 			if query != "" && !scenarioMatch && !strings.Contains(strings.ToLower(r.CueName), query) {
 				continue
 			}
-			items = append(items, rdiffVisItem{kind: rdiffKindCue, scenarioIdx: si, cueIdx: ci})
+			items = append(items, phaseVisItem{kind: phaseKindCue, scenarioIdx: si, cueIdx: ci})
 		}
 	}
 	return items
@@ -664,7 +678,7 @@ func (m rdiffModel) buildVisible() []rdiffVisItem {
 
 // renderListAndCursorLine renders all visible items to a flat line slice.
 // cursorLine is the index of the first line belonging to the cursor item.
-func (m rdiffModel) renderListAndCursorLine() (lines []string, cursorLine int) {
+func (m phaseModel) renderListAndCursorLine() (lines []string, cursorLine int) {
 	cursorLine = 0
 	for vi, item := range m.visible {
 		isCursor := vi == m.cursor
@@ -679,12 +693,12 @@ func (m rdiffModel) renderListAndCursorLine() (lines []string, cursorLine int) {
 
 // renderItem returns the display lines for a single visible item.
 // An expanded cue row includes its active tab content lines beneath it.
-func (m rdiffModel) renderItem(item rdiffVisItem, isCursor bool) []string {
+func (m phaseModel) renderItem(item phaseVisItem, isCursor bool) []string {
 	si, ci := item.scenarioIdx, item.cueIdx
 
 	var header string
 	switch item.kind {
-	case rdiffKindScenario:
+	case phaseKindScenario:
 		sc := m.scenarios[si]
 		arrow := "○"
 		if sc.expanded {
@@ -710,7 +724,7 @@ func (m rdiffModel) renderItem(item rdiffVisItem, isCursor bool) []string {
 		}
 		header = fmt.Sprintf("%s %s   %s", arrow, sc.label, info)
 
-	case rdiffKindMergedScenario:
+	case phaseKindMergedScenario:
 		sc := m.scenarios[si]
 		r := sc.results[ci]
 		sym := browseSymbol(r)
@@ -737,7 +751,7 @@ func (m rdiffModel) renderItem(item rdiffVisItem, isCursor bool) []string {
 			header += tabBar(sc, ci, isCursor)
 		}
 
-	case rdiffKindCue:
+	case phaseKindCue:
 		sc := m.scenarios[si]
 		r := sc.results[ci]
 		sym := browseSymbol(r)
@@ -770,7 +784,7 @@ func (m rdiffModel) renderItem(item rdiffVisItem, isCursor bool) []string {
 	lines := []string{header}
 
 	// Append active tab content lines when expanded.
-	if item.kind != rdiffKindScenario {
+	if item.kind != phaseKindScenario {
 		sc := m.scenarios[si]
 		if sc.cueExpanded[ci] {
 			for _, l := range activeTabLines(sc, ci) {
@@ -801,13 +815,13 @@ func scrollWindowAt(lines []string, height, cursorLine int) (start, end int) {
 	return start, end
 }
 
-func (m rdiffModel) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m phaseModel) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyEscape:
 		m.searchMode = false
 		m.searchQuery = ""
 		m.visible = m.buildVisible()
-		m.cursor = rdiffClamp(m.cursor, 0, len(m.visible)-1)
+		m.cursor = clamp(m.cursor, 0, len(m.visible)-1)
 	case tea.KeyBackspace:
 		if len(m.searchQuery) > 0 {
 			runes := []rune(m.searchQuery)
@@ -818,7 +832,7 @@ func (m rdiffModel) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyEnter:
 		m.searchMode = false
 		m.visible = m.buildVisible()
-		m.cursor = rdiffClamp(m.cursor, 0, len(m.visible)-1)
+		m.cursor = clamp(m.cursor, 0, len(m.visible)-1)
 	case tea.KeyRunes:
 		m.searchQuery += msg.String()
 		m.visible = m.buildVisible()
@@ -828,7 +842,7 @@ func (m rdiffModel) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // updateConfirm handles keypresses while the "run? [y/N]" prompt is shown.
-func (m rdiffModel) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m phaseModel) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case msg.String() == "y" || msg.String() == "Y":
 		select {
@@ -837,6 +851,8 @@ func (m rdiffModel) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.confirmCh = nil
 		m.confirming = false
+		m.phaseLabel = m.nextPhaseLabel
+		m.nextPhaseLabel = ""
 		m.checking = true
 		m.liveEntries = nil
 		m.startedAt = time.Now()
@@ -854,7 +870,7 @@ func (m rdiffModel) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 }
 
-func (m rdiffModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m phaseModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyUp:
 		if m.cursor > 0 {
@@ -904,14 +920,10 @@ func (m rdiffModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "h":
 			m.hideSkipped = !m.hideSkipped
 			m.visible = m.buildVisible()
-			m.cursor = rdiffClamp(m.cursor, 0, len(m.visible)-1)
+			m.cursor = clamp(m.cursor, 0, len(m.visible)-1)
 		case "/":
 			m.searchMode = true
 			m.searchQuery = ""
-		case "r":
-			if m.confirmCh != nil {
-				m.confirming = true
-			}
 		case "q":
 			if m.confirmCh != nil {
 				select {
@@ -921,6 +933,11 @@ func (m rdiffModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.quitting = true
 			return m, tea.Quit
+		default:
+			if m.confirmCh != nil && m.nextPhaseLabel != "" &&
+				msg.String() == string(rune(m.nextPhaseLabel[0])) {
+				m.confirming = true
+			}
 		}
 	}
 	return m, nil
@@ -930,7 +947,7 @@ func (m rdiffModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // - Scenario: toggle expand
 // - Cue collapsed: expand, set first tab
 // - Cue expanded: next tab (cycles)
-func (m rdiffModel) actionRight() rdiffModel {
+func (m phaseModel) actionRight() phaseModel {
 	if len(m.visible) == 0 {
 		return m
 	}
@@ -938,10 +955,10 @@ func (m rdiffModel) actionRight() rdiffModel {
 	si, ci := item.scenarioIdx, item.cueIdx
 
 	switch item.kind {
-	case rdiffKindScenario:
+	case phaseKindScenario:
 		m.scenarios[si].expanded = !m.scenarios[si].expanded
 
-	case rdiffKindMergedScenario, rdiffKindCue:
+	case phaseKindMergedScenario, phaseKindCue:
 		sc := m.scenarios[si]
 		hasDetails := len(sc.detailLines[ci]) > 0
 		hasExec := len(sc.execLines[ci]) > 0
@@ -974,7 +991,7 @@ func (m rdiffModel) actionRight() rdiffModel {
 	}
 done:
 	m.visible = m.buildVisible()
-	m.cursor = rdiffClamp(m.cursor, 0, len(m.visible)-1)
+	m.cursor = clamp(m.cursor, 0, len(m.visible)-1)
 	return m
 }
 
@@ -983,7 +1000,7 @@ done:
 // - Cue expanded at tab > 0: go to previous tab
 // - Cue expanded at tab 0: collapse
 // - Cue collapsed: collapse parent scenario
-func (m rdiffModel) actionLeft() rdiffModel {
+func (m phaseModel) actionLeft() phaseModel {
 	if len(m.visible) == 0 {
 		return m
 	}
@@ -991,10 +1008,10 @@ func (m rdiffModel) actionLeft() rdiffModel {
 	si, ci := item.scenarioIdx, item.cueIdx
 
 	switch item.kind {
-	case rdiffKindScenario:
+	case phaseKindScenario:
 		m.scenarios[si].expanded = false
 
-	case rdiffKindMergedScenario, rdiffKindCue:
+	case phaseKindMergedScenario, phaseKindCue:
 		sc := m.scenarios[si]
 		if sc.cueExpanded[ci] {
 			cur := sc.activeTab[ci]
@@ -1016,20 +1033,20 @@ func (m rdiffModel) actionLeft() rdiffModel {
 				// Already at the first available tab: collapse.
 				m.scenarios[si].cueExpanded[ci] = false
 			}
-		} else if item.kind == rdiffKindCue {
+		} else if item.kind == phaseKindCue {
 			// Collapsed cue: collapse the parent scenario.
 			m.scenarios[si].expanded = false
 		}
 	}
 	m.visible = m.buildVisible()
-	m.cursor = rdiffClamp(m.cursor, 0, len(m.visible)-1)
+	m.cursor = clamp(m.cursor, 0, len(m.visible)-1)
 	return m
 }
 
-func (m rdiffModel) jumpPrevScenario() rdiffModel {
+func (m phaseModel) jumpPrevScenario() phaseModel {
 	for i := m.cursor - 1; i >= 0; i-- {
 		k := m.visible[i].kind
-		if k == rdiffKindScenario || k == rdiffKindMergedScenario {
+		if k == phaseKindScenario || k == phaseKindMergedScenario {
 			m.cursor = i
 			return m
 		}
@@ -1037,7 +1054,7 @@ func (m rdiffModel) jumpPrevScenario() rdiffModel {
 	return m
 }
 
-func (m rdiffModel) compactAll() rdiffModel {
+func (m phaseModel) compactAll() phaseModel {
 	for i := range m.scenarios {
 		m.scenarios[i].expanded = false
 		for j := range m.scenarios[i].cueExpanded {
@@ -1045,11 +1062,11 @@ func (m rdiffModel) compactAll() rdiffModel {
 		}
 	}
 	m.visible = m.buildVisible()
-	m.cursor = rdiffClamp(m.cursor, 0, len(m.visible)-1)
+	m.cursor = clamp(m.cursor, 0, len(m.visible)-1)
 	return m
 }
 
-func (m rdiffModel) expandAll() rdiffModel {
+func (m phaseModel) expandAll() phaseModel {
 	for i := range m.scenarios {
 		m.scenarios[i].expanded = true
 		for j := range m.scenarios[i].cueExpanded {
@@ -1066,11 +1083,11 @@ func (m rdiffModel) expandAll() rdiffModel {
 		}
 	}
 	m.visible = m.buildVisible()
-	m.cursor = rdiffClamp(m.cursor, 0, len(m.visible)-1)
+	m.cursor = clamp(m.cursor, 0, len(m.visible)-1)
 	return m
 }
 
-func (m rdiffModel) allResults() []cue.Result {
+func (m phaseModel) allResults() []cue.Result {
 	var all []cue.Result
 	for _, sc := range m.scenarios {
 		all = append(all, sc.results...)
@@ -1078,7 +1095,7 @@ func (m rdiffModel) allResults() []cue.Result {
 	return all
 }
 
-func (m rdiffModel) countSkipped() int {
+func (m phaseModel) countSkipped() int {
 	n := 0
 	for _, sc := range m.scenarios {
 		for _, r := range sc.results {
@@ -1090,7 +1107,7 @@ func (m rdiffModel) countSkipped() int {
 	return n
 }
 
-func rdiffCountResults(results []cue.Result) (changed, equal, failed int) {
+func countResults(results []cue.Result) (changed, equal, failed int) {
 	for _, r := range results {
 		switch r.Status {
 		case cue.StatusChanged:
@@ -1104,7 +1121,7 @@ func rdiffCountResults(results []cue.Result) (changed, equal, failed int) {
 	return
 }
 
-func rdiffClamp(v, lo, hi int) int {
+func clamp(v, lo, hi int) int {
 	if hi < lo {
 		return lo
 	}
@@ -1119,37 +1136,41 @@ func rdiffClamp(v, lo, hi int) int {
 
 // ── entry points ──────────────────────────────────────────────────────────────
 
-// RunLiveTUI launches a live TUI that runs phase1Fn immediately, then transitions to
-// browse mode. If phase2Fn is non-nil the browse footer shows "r run"; pressing 'r'
-// triggers a confirmation then runs phase2Fn (also showing a live view).
+// RunLiveTUI launches a live TUI that runs phase1 immediately, then transitions to
+// browse mode. If phase2 is non-nil the browse footer shows the advance key (first
+// letter of phase2.Label); pressing it triggers a confirmation then runs phase2.
 //
 // Typical usage:
-//   - rdiff:              phase1Fn=check, phase2Fn=nil
-//   - run (normal):       phase1Fn=check, phase2Fn=run
-//   - run --run-without-check: phase1Fn=run,   phase2Fn=nil  (skip rdiff phase entirely)
+//   - rdiff:                    phase1={check,…}, phase2=nil
+//   - run (normal):             phase1={check,…}, phase2=&{run,…}
+//   - run --run-without-check:  phase1={run,…},   phase2=nil
 func RunLiveTUI(
 	ctx context.Context,
 	target string,
-	isRun bool,
 	verbose bool,
 	level output.Level,
 	minfo *output.ManifestInfo,
-	phase1Fn func(ctx context.Context) ([]cue.Result, time.Duration, error),
-	phase2Fn func(ctx context.Context) ([]cue.Result, time.Duration, error),
+	phase1 PhaseFunc,
+	phase2 *PhaseFunc,
 ) error {
 	var confirmCh chan bool
-	if phase2Fn != nil {
+	if phase2 != nil {
 		confirmCh = make(chan bool, 1)
 	}
 
-	m := rdiffModel{
-		target:    target,
-		verbose:   verbose,
-		minfo:     minfo,
-		isRun:     isRun,
-		width:     80,
-		height:    24,
-		confirmCh: confirmCh,
+	var nextLabel string
+	if phase2 != nil {
+		nextLabel = phase2.Label
+	}
+	m := phaseModel{
+		target:         target,
+		verbose:        verbose,
+		minfo:          minfo,
+		phaseLabel:     phase1.Label,
+		nextPhaseLabel: nextLabel,
+		width:          80,
+		height:         24,
+		confirmCh:      confirmCh,
 	}
 	prog := tea.NewProgram(m, tea.WithAltScreen())
 
@@ -1171,20 +1192,25 @@ func RunLiveTUI(
 	ch := make(chan runResult, 1)
 	go func() {
 		// Phase 1.
-		results, elapsed, err := phase1Fn(ctx)
+		results, elapsed, err := phase1.Fn(ctx)
 
 		var msgConfirmCh chan bool
-		if phase2Fn != nil && err == nil {
+		var msgNextLabel string
+		if phase2 != nil && err == nil {
 			msgConfirmCh = confirmCh
+			msgNextLabel = phase2.Label
 		}
-		prog.Send(liveRunCompleteMsg{results: results, elapsed: elapsed, err: err, confirmCh: msgConfirmCh})
+		prog.Send(liveRunCompleteMsg{
+			results: results, elapsed: elapsed, err: err,
+			confirmCh: msgConfirmCh, phaseLabel: phase1.Label, nextPhaseLabel: msgNextLabel,
+		})
 
-		if phase2Fn == nil {
+		if phase2 == nil {
 			ch <- runResult{results, elapsed, err}
 			return
 		}
 
-		// Wait for user to press 'r' (true) or quit (false).
+		// Wait for user to confirm (true) or quit (false).
 		if confirmed := <-confirmCh; !confirmed {
 			ch <- runResult{results, elapsed, nil}
 			return
@@ -1192,8 +1218,11 @@ func RunLiveTUI(
 
 		// Phase 2. Reuses ctx with live callbacks so the runner's internal pre-check
 		// fires livePrePhaseMsg/liveCheckResultMsg again for a fresh live view.
-		r2, e2, err2 := phase2Fn(ctx)
-		prog.Send(liveRunCompleteMsg{results: r2, elapsed: e2, err: err2, confirmCh: nil})
+		r2, e2, err2 := phase2.Fn(ctx)
+		prog.Send(liveRunCompleteMsg{
+			results: r2, elapsed: e2, err: err2,
+			confirmCh: nil, phaseLabel: phase2.Label, nextPhaseLabel: "",
+		})
 		ch <- runResult{r2, e2, err2}
 	}()
 

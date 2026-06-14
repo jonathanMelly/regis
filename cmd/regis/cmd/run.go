@@ -299,27 +299,32 @@ func newRunCommand(gf *GlobalFlags) *cobra.Command {
 					return res.Results, res.Elapsed, runErr
 				}
 
-				var phase1Fn, phase2Fn func(context.Context) ([]cue.Result, time.Duration, error)
+				var phase1, phase2 tui.PhaseFunc
+				var hasPhase2 bool
 				if gf.RunWithoutCheck {
-					phase1Fn = runFn
+					phase1 = tui.PhaseFunc{Label: "run", Fn: runFn}
 				} else {
 					checkOpts := runOpts
 					checkOpts.CheckOnly = true
-					phase1Fn = func(liveCtx context.Context) ([]cue.Result, time.Duration, error) {
+					phase1 = tui.PhaseFunc{Label: "check", Fn: func(liveCtx context.Context) ([]cue.Result, time.Duration, error) {
 						res, runErr := runner.Run(liveCtx, cfg, scenarioNames, tgt, checkOpts, dispatch, func(cue.Result) {})
 						if res == nil {
 							return nil, 0, runErr
 						}
 						return res.Results, res.Elapsed, runErr
-					}
-					phase2Fn = runFn
+					}}
+					phase2 = tui.PhaseFunc{Label: "run", Fn: runFn}
+					hasPhase2 = true
 				}
 
 				// Level2: TUI.
 				if level >= output.Level2 {
 					spinner.Stop()
-					tuiErr := tui.RunLiveTUI(baseCtx, tgtName, true, gf.Verbose, level, minfo,
-						phase1Fn, phase2Fn)
+					var p2 *tui.PhaseFunc
+					if hasPhase2 {
+						p2 = &phase2
+					}
+					tuiErr := tui.RunLiveTUI(baseCtx, tgtName, gf.Verbose, level, minfo, phase1, p2)
 					if rawConn != nil {
 						rawConn.Close()
 					}
@@ -329,9 +334,9 @@ func newRunCommand(gf *GlobalFlags) *cobra.Command {
 					continue
 				}
 
-				// Level1: plain text output. Phase 1 (check), then optionally phase 2 (run).
+				// Level1: plain text output. Phase 1, then optionally phase 2.
 				spinner.Stop()
-				results, elapsed, runErr := phase1Fn(baseCtx)
+				results, elapsed, runErr := phase1.Fn(baseCtx)
 				if runErr != nil {
 					if rawConn != nil {
 						rawConn.Close()
@@ -340,17 +345,18 @@ func newRunCommand(gf *GlobalFlags) *cobra.Command {
 					os.Exit(1)
 				}
 				fmt.Print(output.RenderTree(results, tgtName, elapsed, true, gf.Verbose, level, minfo))
-				if phase2Fn != nil {
-					fmt.Printf("run? [r to proceed, anything else to cancel]: ")
+				if hasPhase2 {
+					key := string(rune(phase2.Label[0]))
+					fmt.Printf("%s? [%s to proceed, anything else to cancel]: ", phase2.Label, key)
 					var ans string
 					fmt.Scan(&ans)
-					if strings.ToLower(strings.TrimSpace(ans)) != "r" {
+					if strings.ToLower(strings.TrimSpace(ans)) != key {
 						if rawConn != nil {
 							rawConn.Close()
 						}
 						continue
 					}
-					results, elapsed, runErr = phase2Fn(baseCtx)
+					results, elapsed, runErr = phase2.Fn(baseCtx)
 					if runErr != nil {
 						if rawConn != nil {
 							rawConn.Close()
