@@ -490,15 +490,19 @@ func tabBar(sc rdiffScenario, ci int, isCursor bool) string {
 
 	renderTab := func(name string, t tabID) string {
 		if t == active {
-			// Active tab: bold + brackets
 			label := "[" + name + "]"
 			if isCursor {
-				return ansiBold + label + ansiReset + ansiReverse
+				// Stay within the outer reverse context; reset intensity only (\033[22m)
+				// so the reverse background is preserved for the inactive tab too.
+				return ansiBold + label + "\033[22m"
 			}
 			return ansiBold + label + ansiReset
 		}
 		// Inactive but available: dim
 		if (t == tabDetails && hasDetails) || (t == tabExec && hasExec) {
+			if isCursor {
+				return ansiDim + name + "\033[22m"
+			}
 			return colorize(name, ansiDim)
 		}
 		return ""

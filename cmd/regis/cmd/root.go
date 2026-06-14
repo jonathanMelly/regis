@@ -2,7 +2,13 @@
 package cmd
 
 import (
+	"fmt"
+	"os"
+
 	"github.com/spf13/cobra"
+	"git.disroot.org/jmy/regis/internal/config"
+	"git.disroot.org/jmy/regis/internal/output"
+	"git.disroot.org/jmy/regis/internal/tui"
 )
 
 // GlobalFlags holds values for flags shared across all commands.
@@ -65,7 +71,23 @@ No daemon. No agent. No cloud dependency.`,
 	root.Args = cobra.ArbitraryArgs
 	root.RunE = func(cmd *cobra.Command, args []string) error {
 		if len(args) == 0 {
-			return cmd.Help()
+			cfg, err := config.Load(gf.File)
+			if err != nil || len(cfg.Scenarios) == 0 {
+				return cmd.Help()
+			}
+			level := output.DetectLevel()
+			if gf.Plain {
+				level = output.Level1
+			}
+			chosen, menuErr := tui.RunScenarioMenu(cfg, level)
+			if menuErr != nil {
+				fmt.Fprintf(os.Stderr, "menu: %v\n", menuErr)
+				os.Exit(1)
+			}
+			if chosen == "" {
+				return nil
+			}
+			return newRunCommand(&gf).RunE(cmd, []string{chosen})
 		}
 		return newRunCommand(&gf).RunE(cmd, args)
 	}
