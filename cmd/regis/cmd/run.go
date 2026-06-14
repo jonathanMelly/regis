@@ -133,6 +133,8 @@ func newRunCommand(gf *GlobalFlags) *cobra.Command {
 	var pruneStates bool
 	var fresh bool
 	var forceManifest bool
+	var forceCompensate bool
+	var noCompensate bool
 
 	c := &cobra.Command{
 		Use:   "run [scenario[,scenario...]]",
@@ -278,10 +280,26 @@ func newRunCommand(gf *GlobalFlags) *cobra.Command {
 				dispatch := buildDispatch(conn, cfg, &tgt, gf, true)
 				baseCtx, minfo := buildBaseCtx(gf, conn, tgt, cfg)
 
+				// Compute on_error override from flags; effectiveOverride may be updated
+				// by the TUI toggle via phase2.OnOverrideSet before the run phase executes.
+				effectiveOverride := ""
+				if forceCompensate {
+					effectiveOverride = "compensate"
+				} else if noCompensate {
+					effectiveOverride = "halt"
+				}
+
+				compensateEnabled := runner.InferCompensateEnabled(cfg, scenarioNames)
+				if forceCompensate {
+					compensateEnabled = true
+				} else if noCompensate {
+					compensateEnabled = false
+				}
+
 				runOpts := runner.Options{
 					SkipConfirm:   gf.RunWithoutCheck,
 					NatureFilter:  ParseNatureFilter(nature),
-					PruneStates: pruneStates,
+					PruneStates:   pruneStates,
 					ForceManifest: forceManifest,
 					ScopedCues:    scopedCues,
 					AllowDirty:    gf.AllowDirty,
@@ -289,7 +307,9 @@ func newRunCommand(gf *GlobalFlags) *cobra.Command {
 				}
 
 				runFn := func(liveCtx context.Context) ([]cue.Result, time.Duration, error) {
-					res, runErr := runner.Run(liveCtx, cfg, scenarioNames, tgt, runOpts, dispatch, func(cue.Result) {})
+					opts := runOpts
+					opts.OverrideOnError = effectiveOverride
+					res, runErr := runner.Run(liveCtx, cfg, scenarioNames, tgt, opts, dispatch, func(cue.Result) {})
 					if res == nil {
 						return nil, 0, runErr
 					}
@@ -313,7 +333,13 @@ func newRunCommand(gf *GlobalFlags) *cobra.Command {
 						}
 						return res.Results, res.Elapsed, runErr
 					}}
-					phase2 = tui.PhaseFunc{Label: "run", Fn: runFn}
+					phase2 = tui.PhaseFunc{
+						Label: "run",
+						Fn:    runFn,
+						OnOverrideSet: func(override string) {
+							effectiveOverride = override
+						},
+					}
 					hasPhase2 = true
 				}
 
@@ -324,7 +350,7 @@ func newRunCommand(gf *GlobalFlags) *cobra.Command {
 					if hasPhase2 {
 						p2 = &phase2
 					}
-					tuiErr := tui.RunLiveTUI(baseCtx, tgtName, gf.Verbose, level, minfo, phase1, p2)
+					tuiErr := tui.RunLiveTUI(baseCtx, tgtName, gf.Verbose, level, minfo, phase1, p2, compensateEnabled)
 					if rawConn != nil {
 						rawConn.Close()
 					}
@@ -346,6 +372,11 @@ func newRunCommand(gf *GlobalFlags) *cobra.Command {
 				}
 				fmt.Print(output.RenderTree(results, tgtName, elapsed, true, gf.Verbose, level, minfo))
 				if hasPhase2 {
+					if compensateEnabled {
+						fmt.Println("on_error: compensate")
+					} else {
+						fmt.Println("on_error: halt")
+					}
 					key := string(rune(phase2.Label[0]))
 					fmt.Printf("%s? [%s to proceed, anything else to cancel]: ", phase2.Label, key)
 					var ans string
@@ -378,5 +409,7 @@ func newRunCommand(gf *GlobalFlags) *cobra.Command {
 	c.Flags().BoolVar(&pruneStates, "prune-states", false, "prune old states (remote + local) after deploy")
 	c.Flags().BoolVar(&fresh, "fresh", false, "backup then wipe target dir before deploying (prompts for confirmation)")
 	c.Flags().BoolVar(&forceManifest, "force-manifest", false, "[deprecated] state is always written; no-op")
+	c.Flags().BoolVar(&forceCompensate, "compensate", false, "on error: run compensation actions (overrides per-scenario policy)")
+	c.Flags().BoolVar(&noCompensate, "no-compensate", false, "on error: halt (overrides per-scenario compensate)")
 	return c
 }

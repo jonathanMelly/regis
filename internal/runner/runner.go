@@ -30,6 +30,7 @@ type Options struct {
 	CueFilter        []string            // if non-empty, keep only steps whose Name is in this set — rdiff only
 	ScopedCues       map[string][]string // scenario → cue names; keep only those cues, error if any are not found
 	CompensateUI     CompensateUI        // nil = auto-run all compensations (CI); non-nil = interactive prompts
+	OverrideOnError  string              // "compensate" | "halt" | "" (use per-scenario effectiveOnError)
 }
 
 // Dispatch maps cue nature to executor.
@@ -286,9 +287,12 @@ func Run(ctx context.Context, cfg *config.Config, scenarioNames []string, target
 	rr.Results = append(rr.Results, results...)
 	tallyCounts(rr, results)
 	if phaseErr != nil {
-		// Check on_error policy for the failing scenario.
 		failSc := failingScenarioName(results, remotePhase.Steps)
-		if effectiveOnError(cfg, failSc) == "compensate" {
+		onError := opts.OverrideOnError
+		if onError == "" {
+			onError = effectiveOnError(cfg, failSc)
+		}
+		if onError == "compensate" {
 			rr.CompensateOutcome = executeCompensation(ctx, conn, cfg, order, stateID, target, dispatch, onResult, results, remotePhase.Steps, opts.CompensateUI)
 		}
 		rr.Err = phaseErr

@@ -50,8 +50,15 @@ type liveFileProgressMsg struct {
 // The label (e.g. "check", "run") appears in the title/status line and its
 // first letter becomes the key that advances to the next phase.
 type PhaseFunc struct {
-	Label string
-	Fn    func(context.Context) ([]cue.Result, time.Duration, error)
+	Label         string
+	Fn            func(context.Context) ([]cue.Result, time.Duration, error)
+	OnOverrideSet func(overrideOnError string) // optional; called with the on_error toggle state before Fn runs
+}
+
+// confirmDecision is sent on the confirm channel when the user proceeds or cancels.
+type confirmDecision struct {
+	proceed         bool
+	overrideOnError string // "compensate" | "halt"
 }
 
 func phaseGerund(label string) string {
@@ -67,9 +74,9 @@ type liveRunCompleteMsg struct {
 	results        []cue.Result
 	elapsed        time.Duration
 	err            error
-	confirmCh      chan bool // non-nil when a next phase is available
-	phaseLabel     string   // label of the phase that just completed
-	nextPhaseLabel string   // label of the upcoming phase (empty if none)
+	confirmCh      chan confirmDecision // non-nil when a next phase is available
+	phaseLabel     string              // label of the phase that just completed
+	nextPhaseLabel string              // label of the upcoming phase (empty if none)
 }
 type liveTickMsg struct{}
 
@@ -151,8 +158,13 @@ type phaseModel struct {
 	startedAt   time.Time
 
 	// deploy gate (isRun=true, two-phase)
-	confirmCh chan bool // non-nil when waiting for user to press 'r' before deploying
-	confirming bool    // true when showing the "run? [y/N]" confirmation line
+	confirmCh chan confirmDecision // non-nil when waiting for user to press 'r' before deploying
+	confirming bool               // true when showing the "run? [y/N]" confirmation line
+
+	// on_error compensate toggle (only active when confirmCh != nil)
+	compensate         bool // current toggle state (true = compensate, false = halt)
+	compensateInferred bool // initial inferred value before any user toggle
+	compensateToggled  bool // user has explicitly changed the toggle
 }
 
 func (m phaseModel) Init() tea.Cmd {
@@ -207,7 +219,7 @@ func (m phaseModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.checking = false
 			if msg.confirmCh != nil {
 				select {
-				case msg.confirmCh <- false:
+				case msg.confirmCh <- confirmDecision{proceed: false}:
 				default:
 				}
 			}
@@ -222,6 +234,9 @@ func (m phaseModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		newM.height = m.height
 		newM.startedAt = m.startedAt
 		newM.confirmCh = msg.confirmCh
+		newM.compensate = m.compensate
+		newM.compensateInferred = m.compensateInferred
+		newM.compensateToggled = m.compensateToggled
 		return newM, nil
 
 	case liveTickMsg:
@@ -468,11 +483,19 @@ func (m phaseModel) viewBrowse() string {
 		} else {
 			skippedHint = "  h hide-skipped"
 		}
+		var compensateHint string
+		if m.confirmCh != nil {
+			if m.compensate {
+				compensateHint = "  o on_error:compensate"
+			} else {
+				compensateHint = "  o on_error:halt"
+			}
+		}
 		var runHint string
 		if m.confirmCh != nil && m.nextPhaseLabel != "" {
 			runHint = fmt.Sprintf("  %c %s", rune(m.nextPhaseLabel[0]), m.nextPhaseLabel)
 		}
-		fmt.Fprintf(&sb, "\n↑↓ navigate  →← tab/collapse  +/- all  / search%s%s  q quit\n", skippedHint, runHint)
+		fmt.Fprintf(&sb, "\n↑↓ navigate  →← tab/collapse  +/- all  / search%s%s%s  q quit\n", skippedHint, compensateHint, runHint)
 	}
 	return sb.String()
 }
@@ -856,10 +879,14 @@ func (m phaseModel) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // updateConfirm handles keypresses while the "run? [y/N]" prompt is shown.
 func (m phaseModel) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	override := "halt"
+	if m.compensate {
+		override = "compensate"
+	}
 	switch {
 	case msg.String() == "y" || msg.String() == "Y":
 		select {
-		case m.confirmCh <- true:
+		case m.confirmCh <- confirmDecision{proceed: true, overrideOnError: override}:
 		default:
 		}
 		m.confirmCh = nil
@@ -872,7 +899,7 @@ func (m phaseModel) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, liveTick()
 	case msg.Type == tea.KeyCtrlC:
 		select {
-		case m.confirmCh <- false:
+		case m.confirmCh <- confirmDecision{proceed: false}:
 		default:
 		}
 		m.quitting = true
@@ -910,7 +937,7 @@ func (m phaseModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyCtrlC:
 		if m.confirmCh != nil {
 			select {
-			case m.confirmCh <- false:
+			case m.confirmCh <- confirmDecision{proceed: false}:
 			default:
 			}
 		}
@@ -937,10 +964,15 @@ func (m phaseModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "/":
 			m.searchMode = true
 			m.searchQuery = ""
+		case "o":
+			if m.confirmCh != nil {
+				m.compensate = !m.compensate
+				m.compensateToggled = true
+			}
 		case "q":
 			if m.confirmCh != nil {
 				select {
-				case m.confirmCh <- false:
+				case m.confirmCh <- confirmDecision{proceed: false}:
 				default:
 				}
 			}
@@ -1165,10 +1197,11 @@ func RunLiveTUI(
 	minfo *output.ManifestInfo,
 	phase1 PhaseFunc,
 	phase2 *PhaseFunc,
+	compensate bool,
 ) error {
-	var confirmCh chan bool
+	var confirmCh chan confirmDecision
 	if phase2 != nil {
-		confirmCh = make(chan bool, 1)
+		confirmCh = make(chan confirmDecision, 1)
 	}
 
 	var nextLabel string
@@ -1176,14 +1209,16 @@ func RunLiveTUI(
 		nextLabel = phase2.Label
 	}
 	m := phaseModel{
-		target:         target,
-		verbose:        verbose,
-		minfo:          minfo,
-		phaseLabel:     phase1.Label,
-		nextPhaseLabel: nextLabel,
-		width:          80,
-		height:         24,
-		confirmCh:      confirmCh,
+		target:             target,
+		verbose:            verbose,
+		minfo:              minfo,
+		phaseLabel:         phase1.Label,
+		nextPhaseLabel:     nextLabel,
+		width:              80,
+		height:             24,
+		confirmCh:          confirmCh,
+		compensate:         compensate,
+		compensateInferred: compensate,
 	}
 	prog := tea.NewProgram(m, tea.WithAltScreen())
 
@@ -1207,7 +1242,7 @@ func RunLiveTUI(
 		// Phase 1.
 		results, elapsed, err := phase1.Fn(ctx)
 
-		var msgConfirmCh chan bool
+		var msgConfirmCh chan confirmDecision
 		var msgNextLabel string
 		if phase2 != nil && err == nil {
 			msgConfirmCh = confirmCh
@@ -1223,10 +1258,16 @@ func RunLiveTUI(
 			return
 		}
 
-		// Wait for user to confirm (true) or quit (false).
-		if confirmed := <-confirmCh; !confirmed {
+		// Wait for user to confirm or quit.
+		decision := <-confirmCh
+		if !decision.proceed {
 			ch <- runResult{results, elapsed, nil}
 			return
+		}
+
+		// Apply on_error override from the toggle before running phase 2.
+		if phase2.OnOverrideSet != nil {
+			phase2.OnOverrideSet(decision.overrideOnError)
 		}
 
 		// Phase 2. Reuses ctx with live callbacks so the runner's internal pre-check
@@ -1244,7 +1285,7 @@ func RunLiveTUI(
 	// If the TUI exited before the user confirmed, unblock the goroutine.
 	if confirmCh != nil {
 		select {
-		case confirmCh <- false:
+		case confirmCh <- confirmDecision{proceed: false}:
 		default:
 		}
 	}

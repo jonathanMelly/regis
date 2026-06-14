@@ -182,6 +182,36 @@ func runDeferredCompensation(conn cue.SSHConn, cr config.CueRef, shell string, t
 	return nil
 }
 
+// InferCompensateEnabled returns true when the overall inferred on_error policy is
+// "compensate" for the set of scenarios: at least one cue has compensation enabled
+// (or the scenario/global config sets on_error: compensate), unless any scenario
+// explicitly overrides on_error: halt.
+func InferCompensateEnabled(cfg *config.Config, scenarioNames []string) bool {
+	hasComp := false
+	for _, name := range scenarioNames {
+		sc, ok := cfg.Scenarios[name]
+		if !ok {
+			continue
+		}
+		switch sc.OnError {
+		case "halt":
+			return false
+		case "compensate":
+			hasComp = true
+			continue
+		}
+		for _, cr := range sc.Cues {
+			if cr.ScenarioRef == "" && cr.Compensation != nil && cr.Compensation.Enabled {
+				hasComp = true
+			}
+		}
+	}
+	if hasComp {
+		return true
+	}
+	return cfg.Run.OnError == "compensate"
+}
+
 // effectiveOnError returns the on_error policy for a failing scenario.
 // Priority: scenario.on_error → inferred from per-cue compensation: fields → cfg.Run.OnError → "halt".
 // "restore" is accepted as an alias for "compensate" for backward compatibility.
