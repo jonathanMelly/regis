@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/agnivade/levenshtein"
 	"github.com/spf13/cobra"
 	"git.disroot.org/jmy/regis/internal/config"
 	"git.disroot.org/jmy/regis/internal/cue"
@@ -164,6 +165,29 @@ func newRunCommand(gf *GlobalFlags) *cobra.Command {
 					if IsReservedScenarioName(name) {
 						fmt.Fprintf(os.Stderr, "note: %q resolved to scenario — use :%s for the built-in\n", name, name)
 					}
+				}
+				// Validate scenario names before connecting or starting TUI.
+				var badNames []string
+				for _, name := range scenarioNames {
+					if strings.HasPrefix(name, ":") {
+						continue
+					}
+					if _, ok := cfg.Scenarios[name]; !ok {
+						badNames = append(badNames, name)
+					}
+				}
+				if len(badNames) > 0 {
+					var msgs []string
+					for _, name := range badNames {
+						sugg := scenarioSuggestions(name, cfg.ScenarioNames)
+						if len(sugg) > 0 {
+							msgs = append(msgs, fmt.Sprintf("scenario %q not in regis.yml — did you mean: %s?",
+								name, strings.Join(sugg, ", ")))
+						} else {
+							msgs = append(msgs, fmt.Sprintf("scenario %q not in regis.yml", name))
+						}
+					}
+					return fmt.Errorf("%s", strings.Join(msgs, "\n"))
 				}
 			}
 
@@ -412,4 +436,15 @@ func newRunCommand(gf *GlobalFlags) *cobra.Command {
 	c.Flags().BoolVar(&forceCompensate, "compensate", false, "on error: run compensation actions (overrides per-scenario policy)")
 	c.Flags().BoolVar(&noCompensate, "no-compensate", false, "on error: halt (overrides per-scenario compensate)")
 	return c
+}
+
+func scenarioSuggestions(name string, candidates []string) []string {
+	threshold := max(1, (len(name)+2)/4)
+	var out []string
+	for _, c := range candidates {
+		if levenshtein.ComputeDistance(name, c) <= threshold {
+			out = append(out, c)
+		}
+	}
+	return out
 }

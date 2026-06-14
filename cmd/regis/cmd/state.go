@@ -16,12 +16,77 @@ import (
 
 func newStateCommand(gf *GlobalFlags) *cobra.Command {
 	st := &cobra.Command{
-		Use:   "state",
-		Short: "inspect and verify deployment state",
-		Long: `regis state — commands for inspecting what regis last deployed.
+		Use:   "state [subcommand]",
+		Short: "show deployment state (local + remote); subcommands: show, list, check, adopt, hint",
+		Long: `regis state — inspect what regis last deployed.
 
+Without a subcommand: shows the live remote state and local state history.
 State records the git ref, per-cue file inventory (remote paths + hashes),
 and deployment metadata. Used for drift detection and recovery guidance.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load(gf.File)
+			if err != nil {
+				return err
+			}
+			var tgtNames []string
+			for _, t := range cfg.Targets {
+				tgtNames = append(tgtNames, t.Name)
+			}
+			selected := SelectTargets(tgtNames, gf.Target)
+			if len(selected) == 0 {
+				return fmt.Errorf("no targets matched")
+			}
+			localDir := effectiveStateDir(cfg)
+			for _, tgtName := range selected {
+				var tgt config.Target
+				for i := range cfg.Targets {
+					if cfg.Targets[i].Name == tgtName {
+						_ = config.InterpolateForTarget(cfg, &cfg.Targets[i])
+						tgt = cfg.Targets[i]
+						break
+					}
+				}
+				conn, dialErr := regssh.Dial(tgt)
+				if dialErr != nil {
+					fmt.Printf("remote (%s): offline — %v\n", tgtName, dialErr)
+				} else if conn != nil {
+					if expanded, expErr := conn.ExpandHome(tgt.Dir); expErr == nil && expanded != "" {
+						tgt.Dir = expanded
+					}
+					if state, sErr := runner.LoadRemoteState(conn, tgt.Dir); sErr == nil {
+						fmt.Printf("remote (%s):\n", tgtName)
+						printStateSummary(state, tgtName)
+					} else {
+						fmt.Printf("remote (%s): no state — not yet deployed with regis\n", tgtName)
+					}
+					conn.Close()
+				}
+				fmt.Println()
+				ids := runner.ListLocalStates(localDir, tgtName)
+				if len(ids) == 0 {
+					fmt.Printf("local: no states for %s\n", tgtName)
+				} else {
+					fmt.Printf("local (%s/%s):\n", localDir, tgtName)
+					for _, id := range ids {
+						s, lErr := runner.LoadLocalState(localDir, tgtName, id)
+						if lErr != nil {
+							fmt.Printf("  %s  (unreadable)\n", id)
+							continue
+						}
+						dirty := ""
+						if !s.GitClean && s.GitRef != "" {
+							dirty = " !"
+						}
+						ref := ""
+						if s.GitRef != "" {
+							ref = "  " + shortRef(s.GitRef) + dirty
+						}
+						fmt.Printf("  %s  %s  by %s%s\n", id, s.DeployedAt.Format("2006-01-02 15:04"), s.DeployedBy, ref)
+					}
+				}
+			}
+			return nil
+		},
 	}
 	st.AddCommand(newStateShowCommand(gf))
 	st.AddCommand(newStateListCommand(gf))
@@ -155,7 +220,7 @@ Symbols:
   -  missing on target
   ?  no hash recorded (first deploy or equal via fast-path)
 
-Resolution: run rdiff to understand changes, then redeploy.`,
+Resolution: redeploy (regis run) to restore files to the expected state.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return withConn(gf, func(conn *regssh.Conn, tgt config.Target, cfg *config.Config) error {
@@ -247,7 +312,9 @@ Resolution: run rdiff to understand changes, then redeploy.`,
 					}
 					// Secret: no hash check, just verify presence.
 					if e.nature == "secret" {
-						fmt.Printf("  =  %s/%s  (present — secret, content not verified)\n", e.cueName, e.relKey)
+						if gf.Verbose {
+							fmt.Printf("  =  %s/%s  (present — secret, content not verified)\n", e.cueName, e.relKey)
+						}
 						nSync++
 						continue
 					}
@@ -257,14 +324,17 @@ Resolution: run rdiff to understand changes, then redeploy.`,
 						continue
 					}
 					if !needsHash[e.fileState.Remote] {
-						// mtime+size matched: fast-path equal.
-						fmt.Printf("  =  %s/%s\n", e.cueName, e.relKey)
+						if gf.Verbose {
+							fmt.Printf("  =  %s/%s\n", e.cueName, e.relKey)
+						}
 						nSync++
 						continue
 					}
 					remoteHash := remoteHashes[e.fileState.Remote]
 					if remoteHash == e.fileState.Hash {
-						fmt.Printf("  =  %s/%s\n", e.cueName, e.relKey)
+						if gf.Verbose {
+							fmt.Printf("  =  %s/%s\n", e.cueName, e.relKey)
+						}
 						nSync++
 					} else {
 						fmt.Printf("  ~  %s/%s  (drifted — deployed:%s  now:%s)\n",
@@ -294,7 +364,7 @@ Resolution: run rdiff to understand changes, then redeploy.`,
 
 				if nDrift > 0 || nMissing > 0 {
 					fmt.Println("\ntarget has drifted from last deploy")
-					fmt.Println("→ run rdiff to understand, then redeploy")
+					fmt.Println("→ redeploy (regis run) to restore files to expected state")
 				}
 				return nil
 			})

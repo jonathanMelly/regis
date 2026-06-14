@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 
 	"git.disroot.org/jmy/regis/internal/config"
 	regssh "git.disroot.org/jmy/regis/internal/ssh"
@@ -43,9 +44,13 @@ func newSSHCommand(gf *GlobalFlags) *cobra.Command {
 					port = n
 				}
 			}
-			sshArgs := []string{
-				"-p", fmt.Sprintf("%d", port),
-				fmt.Sprintf("%s@%s", tgt.User, tgt.Host),
+			sshArgs := []string{"-p", fmt.Sprintf("%d", port)}
+			if tgt.Dir != "" {
+				dir := strings.ReplaceAll(tgt.Dir, "'", `'\''`)
+				sshArgs = append(sshArgs, "-t", fmt.Sprintf("%s@%s", tgt.User, tgt.Host),
+					fmt.Sprintf("cd '%s' 2>/dev/null; exec $SHELL -l", dir))
+			} else {
+				sshArgs = append(sshArgs, fmt.Sprintf("%s@%s", tgt.User, tgt.Host))
 			}
 			sh := exec.Command("ssh", sshArgs...)
 			sh.Stdin = os.Stdin
