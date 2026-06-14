@@ -4,6 +4,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -152,7 +153,7 @@ func newStateListCommand(gf *GlobalFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:     "list",
 		Aliases: []string{"ls"},
-		Short:   "list local deployment states for this target",
+		Short:   "list deployment states (local and remote) for this target",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load(gf.File)
 			if err != nil {
@@ -166,37 +167,88 @@ func newStateListCommand(gf *GlobalFlags) *cobra.Command {
 			if len(selected) == 0 {
 				return fmt.Errorf("no targets matched")
 			}
-			localDir := cfg.State.LocalDir
-			if localDir == "" {
-				localDir = ".regis-states"
-			}
+			localDir := effectiveStateDir(cfg)
 			for _, tgtName := range selected {
-				ids := runner.ListLocalStates(localDir, tgtName)
-				if len(ids) == 0 {
-					fmt.Printf("no local states for %s\n", tgtName)
+				var tgt config.Target
+				for i := range cfg.Targets {
+					if cfg.Targets[i].Name == tgtName {
+						_ = config.InterpolateForTarget(cfg, &cfg.Targets[i])
+						tgt = cfg.Targets[i]
+						break
+					}
+				}
+
+				localIDs := runner.ListLocalStates(localDir, tgtName)
+				localSet := make(map[string]bool, len(localIDs))
+				for _, id := range localIDs {
+					localSet[id] = true
+				}
+
+				// Attempt remote listing (best-effort).
+				remoteSet := make(map[string]bool)
+				conn, dialErr := regssh.Dial(tgt)
+				if dialErr == nil && conn != nil {
+					if expanded, expErr := conn.ExpandHome(tgt.Dir); expErr == nil && expanded != "" {
+						tgt.Dir = expanded
+					}
+					if remoteIDs, listErr := runner.ListRemoteStates(conn, tgt.Dir); listErr == nil {
+						for _, id := range remoteIDs {
+							remoteSet[id] = true
+						}
+					}
+					conn.Close()
+				} else {
+					fmt.Fprintf(os.Stderr, "warn: could not reach %s — remote state unavailable\n", tgtName)
+				}
+
+				// Merge all IDs, newest first.
+				seen := make(map[string]bool)
+				var allIDs []string
+				for _, id := range localIDs {
+					if !seen[id] {
+						allIDs = append(allIDs, id)
+						seen[id] = true
+					}
+				}
+				for id := range remoteSet {
+					if !seen[id] {
+						allIDs = append(allIDs, id)
+						seen[id] = true
+					}
+				}
+				sort.Sort(sort.Reverse(sort.StringSlice(allIDs)))
+
+				if len(allIDs) == 0 {
+					fmt.Printf("no states for %s\n", tgtName)
 					continue
 				}
-				fmt.Printf("states  %s  (local: %s/%s)\n", tgtName, localDir, tgtName)
-				for _, id := range ids {
-					s, err := runner.LoadLocalState(localDir, tgtName, id)
-					if err != nil {
-						fmt.Printf("  %s  (unreadable)\n", id)
-						continue
+				fmt.Printf("states  %s\n", tgtName)
+				for _, id := range allIDs {
+					loc, rem := localSet[id], remoteSet[id]
+					var where string
+					switch {
+					case loc && rem:
+						where = "both        "
+					case loc:
+						where = "local-only  "
+					default:
+						where = "remote-only "
 					}
-					dirty := ""
-					if !s.GitClean && s.GitRef != "" {
-						dirty = " !"
+					meta := ""
+					if loc {
+						if s, lErr := runner.LoadLocalState(localDir, tgtName, id); lErr == nil {
+							dirty := ""
+							if !s.GitClean && s.GitRef != "" {
+								dirty = "!"
+							}
+							ref := ""
+							if s.GitRef != "" {
+								ref = "  " + shortRef(s.GitRef) + dirty
+							}
+							meta = fmt.Sprintf("  %s  by %s%s", s.DeployedAt.Format("2006-01-02 15:04"), s.DeployedBy, ref)
+						}
 					}
-					ref := ""
-					if s.GitRef != "" {
-						ref = "  " + shortRef(s.GitRef) + dirty
-					}
-					fmt.Printf("  %s  %s  by %s%s\n",
-						id,
-						s.DeployedAt.Format("2006-01-02 15:04"),
-						s.DeployedBy,
-						ref,
-					)
+					fmt.Printf("  %s  %s%s\n", id, where, meta)
 				}
 			}
 			return nil

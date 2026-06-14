@@ -2,6 +2,8 @@
 package runner
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io/fs"
 	"os"
@@ -25,6 +27,7 @@ const stateSchema = 1
 type State struct {
 	Schema     int                 `yaml:"schema"`
 	ID         string              `yaml:"id"`
+	Checksum   string              `yaml:"checksum,omitempty"`
 	GitRef     string              `yaml:"git_ref,omitempty"`
 	GitClean   bool                `yaml:"git_clean,omitempty"`
 	DeployedAt time.Time           `yaml:"deployed_at"`
@@ -53,10 +56,20 @@ type FileState struct {
 	Hash   string `yaml:"hash,omitempty"`  // MD5 hex
 }
 
-// stateUploader is the SSH subset needed to write/read the remote state file.
+// stateUploader is the SSH subset needed to read/write remote state files.
 type stateUploader interface {
+	Run(cmd string) (stdout, stderr string, exitCode int, err error)
 	UploadBytes(data []byte, remotePath string, mode fs.FileMode, useSudo bool) error
 	Download(remotePath string) ([]byte, error)
+}
+
+// computeChecksum returns a SHA-256 hex digest of s serialised to YAML,
+// with the Checksum field zeroed so the digest is stable across writes.
+func computeChecksum(s State) string {
+	s.Checksum = ""
+	data, _ := yaml.Marshal(s)
+	h := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(h[:])
 }
 
 // NewStateID generates a state ID of the form v20060102-150405.
@@ -242,9 +255,15 @@ func BuildState(
 	return s
 }
 
+// remoteStatesDir returns the remote directory that holds state archives.
+func remoteStatesDir(targetDir string) string {
+	return targetDir + "/.regis-states"
+}
+
 // SaveState writes the state as a YAML file under localDir/<target>/<id>.yml.
 // Returns a non-nil error if the write fails.
 func SaveState(s State, localDir string) error {
+	s.Checksum = computeChecksum(s)
 	dir := filepath.Join(localDir, s.Target)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("state: mkdir %s: %w", dir, err)
@@ -253,37 +272,80 @@ func SaveState(s State, localDir string) error {
 	if err != nil {
 		return fmt.Errorf("state: marshal: %w", err)
 	}
-	path := filepath.Join(dir, s.ID+".yml")
-	if err := os.WriteFile(path, data, 0644); err != nil {
-		return fmt.Errorf("state: write %s: %w", path, err)
+	p := filepath.Join(dir, s.ID+".yml")
+	if err := os.WriteFile(p, data, 0644); err != nil {
+		return fmt.Errorf("state: write %s: %w", p, err)
 	}
 	return nil
 }
 
-// WriteStateToRemote uploads the state as YAML to <targetDir>/.regis-state.
+// WriteStateToRemote uploads the state to <targetDir>/.regis-states/<id>.yml.
 func WriteStateToRemote(conn stateUploader, targetDir string, s State, sudo bool) error {
+	s.Checksum = computeChecksum(s)
 	data, err := yaml.Marshal(s)
 	if err != nil {
 		return fmt.Errorf("state: marshal for remote: %w", err)
 	}
-	if err := conn.UploadBytes(data, targetDir+"/.regis-state", 0644, sudo); err != nil {
-		return fmt.Errorf("state: upload .regis-state: %w", err)
+	dir := remoteStatesDir(targetDir)
+	if _, _, code, runErr := conn.Run(fmt.Sprintf("mkdir -p %s", shellQuotePath(dir))); runErr != nil || code != 0 {
+		return fmt.Errorf("state: mkdir %s on remote: %w", dir, runErr)
+	}
+	p := dir + "/" + s.ID + ".yml"
+	if err := conn.UploadBytes(data, p, 0644, sudo); err != nil {
+		return fmt.Errorf("state: upload %s: %w", p, err)
 	}
 	return nil
 }
 
-// LoadRemoteState downloads the live state from the target.
-// LoadRemoteState downloads the live state from the target (.regis-state file).
+// ListRemoteStates returns state IDs found in <targetDir>/.regis-states/, newest first.
+func ListRemoteStates(conn stateUploader, targetDir string) ([]string, error) {
+	dir := remoteStatesDir(targetDir)
+	stdout, _, _, err := conn.Run(fmt.Sprintf("find %s -maxdepth 1 -name '*.yml' -type f 2>/dev/null", shellQuotePath(dir)))
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for _, line := range strings.Split(stdout, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		base := path.Base(line)
+		if strings.HasSuffix(base, ".yml") {
+			ids = append(ids, strings.TrimSuffix(base, ".yml"))
+		}
+	}
+	sort.Sort(sort.Reverse(sort.StringSlice(ids)))
+	return ids, nil
+}
+
+// LoadRemoteState downloads the newest state from <targetDir>/.regis-states/.
 func LoadRemoteState(conn stateUploader, targetDir string) (*State, error) {
-	data, err := conn.Download(targetDir + "/.regis-state")
+	ids, err := ListRemoteStates(conn, targetDir)
+	if err != nil || len(ids) == 0 {
+		return nil, fmt.Errorf("no remote states in %s/.regis-states", targetDir)
+	}
+	return LoadRemoteStateByID(conn, targetDir, ids[0])
+}
+
+// LoadRemoteStateByID downloads a specific state from <targetDir>/.regis-states/<id>.yml.
+func LoadRemoteStateByID(conn stateUploader, targetDir, id string) (*State, error) {
+	p := remoteStatesDir(targetDir) + "/" + id + ".yml"
+	data, err := conn.Download(p)
 	if err != nil {
 		return nil, err
 	}
 	var s State
 	if err := yaml.Unmarshal(data, &s); err != nil {
-		return nil, fmt.Errorf("parse state: %w", err)
+		return nil, fmt.Errorf("parse state %s: %w", id, err)
 	}
 	return &s, nil
+}
+
+// shellQuotePath single-quotes a path for use in remote shell commands.
+// Assumes targetDir has already been expanded (no ~).
+func shellQuotePath(p string) string {
+	return "'" + strings.ReplaceAll(p, "'", `'\''`) + "'"
 }
 
 // LoadLocalState reads a specific state record from localDir/<target>/<id>.yml.
