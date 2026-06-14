@@ -188,9 +188,9 @@ func InterpolateForTarget(c *Config, t *Target) error {
 //   ${TARGET_DIR}   — remote working directory (target.dir)
 //   ${TARGET_PORT}  — SSH port (only when explicitly set)
 // Built-in runtime variable (injected into every cue env at deploy start):
-//   ${RELEASE_ID}   — unique deploy ID; format vYYYYMMDD-HHMMSS, or vYYYYMMDD-HHMMSS+<tag> when
+//   ${STATE_ID}     — unique deploy ID; format vYYYYMMDD-HHMMSS, or vYYYYMMDD-HHMMSS+<tag> when
 //                     HEAD is on a git tag; consistent across all cues in a run; use in backup
-//                     labels (backup --label=pre-${RELEASE_ID}) so rollback can find the right snapshot
+//                     labels (backup --label=pre-${STATE_ID}) so compensation can find the right snapshot
 
 // Interpolate applies variable substitution to all string fields in the Config.
 // Loads .env.local from BaseDir (or the directory of the primary source file).

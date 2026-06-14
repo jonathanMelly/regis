@@ -196,24 +196,24 @@ scenarios:
 	}
 }
 
-// ── restore: defer ───────────────────────────────────────────────────────────
+// ── compensation: defer ──────────────────────────────────────────────────────
 
-func TestValidateYAML_rollbackDefer_valid(t *testing.T) {
+func TestValidateYAML_compensationDefer_valid(t *testing.T) {
 	cfg := mustLoad(t, `
 scenarios:
   deploy:
     cues:
       - name: install-deps
         shell: composer install
-        restore: defer
+        compensation: defer
 `)
 	cr := cfg.Scenarios["deploy"].Cues[0]
-	if cr.Restore == nil || !cr.Restore.Defer {
-		t.Errorf("want Defer=true, got %+v", cr.Restore)
+	if cr.Compensation == nil || !cr.Compensation.Defer {
+		t.Errorf("want Defer=true, got %+v", cr.Compensation)
 	}
 }
 
-func TestValidateYAML_rollbackDefer_noShell_error(t *testing.T) {
+func TestValidateYAML_compensationDefer_noShell_error(t *testing.T) {
 	msg := mustFail(t, `
 scenarios:
   deploy:
@@ -222,7 +222,7 @@ scenarios:
         nature: pack
         src: vendor/**
         dest: ./
-        restore: defer
+        compensation: defer
 `)
 	if !strings.Contains(msg, "shell:") {
 		t.Errorf("expected 'shell:' in error message, got %q", msg)

@@ -56,7 +56,7 @@ type Result struct {
 	Err              error
 	PostActions      []PostAction  // collected if Changed, for dedup phase
 	AffectsState   bool          // mirrors cue field — used by runner
-	IsLocal          bool          // local action — never release-affecting
+	IsLocal          bool          // local action — never state-affecting
 	LocalPath        string        // local file path (binary cues, for display)
 	RemotePath       string        // remote file path (binary cues, for display)
 	LocalMtime       time.Time     // mtime of local file (binary cues)
@@ -74,14 +74,14 @@ type Result struct {
 	Cmd              string            // human-readable command/path that was or would be executed (for display in exec tab)
 }
 
-// IsStateAffecting reports whether this result should trigger release creation.
-// Matches spec §4.3 "Release-affecting cues".
+// IsStateAffecting reports whether this result should trigger state creation.
+// Matches spec §4.3 "State-affecting cues".
 func (r Result) IsStateAffecting() bool {
 	if r.Status != StatusChanged {
 		return false
 	}
 	if r.IsLocal {
-		return false // local actions never affect release
+		return false // local actions never affect state
 	}
 	switch r.Nature {
 	case "binary", "config", "secret", "render":

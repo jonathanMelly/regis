@@ -22,10 +22,9 @@ scenarios:
     env: {}                                   # Env vars for all cues in this scenario; overrides defaults.env, overridden by cue-level env
     post: ""                                  # Remote command (or restart:/reload: shorthand) run once if any remote cue changed
     requires: []                              # Scenario names that must complete first (alias: needs) — deduplicated
-    rollback_hint: ""                         # Hint shown by 'regis state hint' — describes how to roll back this scenario. Supports {prev_sha} placeholder.
-    restore: []                               # Actions run on the remote after file-snapshot restore when on_error: restore triggers; ${DEPLOY_ID} is available
+    compensation_hint: ""                     # Hint shown by 'regis state hint' — describes how to roll back this scenario. Supports {prev_sha} placeholder.
     success_when: auto                        # auto|command|service|checks — Override for run.success_when
-    on_error: restore                         # restore|halt|continue — Override for run.on_error
+    on_error: compensate                      # compensate|halt|continue — Override for run.on_error
     cues:
       - name: ""                              # mandatory — Unique within the scenario
         nature: binary                        # mandatory — binary|config|secret|action|generate|render|pack|service — inferred when manager: is set (→ service) or git: true (→ pack)
@@ -42,7 +41,7 @@ scenarios:
         preserve: []                          # Remote keys never overwritten during merge (secret only)
         mode: ""                              # Remote file permissions, e.g. "600"
         if: ""                                # Boolean rule or probe — skip cue when false
-        affects_state: false                  # Mark remote action cue as release-affecting (default false for actions)
+        affects_state: false                  # Mark remote action cue as state-affecting so it is recorded in the deploy state (default false for actions)
         changed_when: ""                      # Override change detection — defaults: binary/config/secret/render=MD5 diff, action=always changed, generate=always equal; expressions: "stdout contains X", "stdout !contains X", "stderr contains X", "exit == N", "exit != N"; or changed_when: true to force
         failed_when: ""                       # Override failure detection — defaults: action/generate=exit != 0, binary/config/secret=upload error; expressions: "exit != 0", "stdout contains ERROR", "stderr !contains OK"
         continue_on_error: false              # true = cue failure does not halt deployment (default false)
@@ -59,16 +58,16 @@ scenarios:
         service_file: ""                      # Local path to systemd unit file; uploaded to /etc/systemd/system/<name>.service when changed
         health: ""                            # Health-check command (crontab watchdog)
         commands: {}                          # Override or extend manager commands (start, stop, restart, reload, deploy, status). Template vars: {name}, {binary}, {dir}, {service_file}. Action refs: {restart}, {reload}, etc. expand to the pre-override base command
-        # ── per-cue rollback (infers on_error: restore; true/"cmd"/{shell,sudo}/defer) ──
-        restore: ""                           # Per-cue compensation on restore — restore: true re-deploys previous file state; restore: "cmd" or {shell, sudo} runs a command for action natures; restore: defer re-executes the cue shell after file restores; infers on_error: restore for the scenario
-        rollback_hint: ""                     # Hint shown by 'regis state hint' for this cue — e.g. DB migration reversal command. Supports {prev_sha} placeholder.
+        # ── per-cue compensation (infers on_error: compensate; "cmd"/{shell,sudo}/defer/interactive) ──
+        compensation: ""                      # Per-cue compensation on error — compensation: "cmd" runs a command; compensation: {shell, sudo} for sudo; compensation: defer re-runs the cue shell after all compensations; compensation: interactive drops to operator shell; file natures warn (no automated file restore — use regis state hint)
+        compensation_hint: ""                 # Hint shown by 'regis state hint' for this cue — e.g. DB migration reversal command. Supports {prev_sha} placeholder.
     checks:                  # terminal acceptance probes; run after cues complete
       - name: <string>       # required
         nature: action       # checks are read-only action cues
         shell: <string>      # probe command
-    rollback:                # actions run on remote after snapshot restore when on_error: restore
+    compensate:              # scenario-level actions run when on_error: compensate triggers
       - name: <string>       # required
-        shell: <string>      # remote command; $RELEASE_ID is available
+        shell: <string>      # remote command; $STATE_ID is available
         sudo: false
 
 run:
@@ -77,9 +76,13 @@ run:
   max_failures: 0                             # Allowed target failures before halting
   on_failure: halt                            # halt|continue — Reaction when a target fails
   success_when: auto                          # auto|command|service|checks — How success is determined
-  on_error: halt                              # rollback|halt|continue — Reaction on error
+  on_error: halt                              # compensate|halt|continue — Reaction on error
 
-release:
+state:
+  enabled: true                               # Record deployment state after each deploy
+  dir: /opt/app/.regis-states                 # Remote directory for legacy file archives; default <target.dir>/.regis-states (rarely needed)
+  local_dir: .regis-states                    # Local directory for state records
+  keep: 5                                     # State records to retain when --prune is used (default 5)
 
 concurrency:
   lock: true                                  # Enable deploy lock to prevent concurrent deploys

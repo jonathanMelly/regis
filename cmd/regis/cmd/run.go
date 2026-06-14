@@ -130,7 +130,7 @@ func SelectTargets(targetNames []string, selector string) []string {
 
 func newRunCommand(gf *GlobalFlags) *cobra.Command {
 	var secretOnly bool
-	var pruneReleases bool
+	var pruneStates bool
 	var fresh bool
 	var forceManifest bool
 
@@ -281,7 +281,7 @@ func newRunCommand(gf *GlobalFlags) *cobra.Command {
 				runOpts := runner.Options{
 					SkipConfirm:   gf.RunWithoutCheck,
 					NatureFilter:  ParseNatureFilter(nature),
-					PruneReleases: pruneReleases,
+					PruneStates: pruneStates,
 					ForceManifest: forceManifest,
 					ScopedCues:    scopedCues,
 					AllowDirty:    gf.AllowDirty,
@@ -375,7 +375,7 @@ func newRunCommand(gf *GlobalFlags) *cobra.Command {
 	}
 
 	c.Flags().BoolVarP(&secretOnly, "secrets", "s", false, "shorthand for --nature secret")
-	c.Flags().BoolVar(&pruneReleases, "prune-releases", false, "prune old releases (remote + local) after deploy")
+	c.Flags().BoolVar(&pruneStates, "prune-states", false, "prune old states (remote + local) after deploy")
 	c.Flags().BoolVar(&fresh, "fresh", false, "backup then wipe target dir before deploying (prompts for confirmation)")
 	c.Flags().BoolVar(&forceManifest, "force-manifest", false, "[deprecated] state is always written; no-op")
 	return c

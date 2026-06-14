@@ -11,7 +11,7 @@
 // prune: true (folder mode only) deletes remote files absent from the rendered output.
 // Always runs — even during rdiff — so comparisons reflect freshly rendered content.
 // Direction: local (rendered) → remote.
-// restore: true — re-deploy previous version from git at the recorded state ref.
+// compensation: file state is not automatically restored — use `regis state hint` for recovery guidance.
 package cue
 
 import (

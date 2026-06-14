@@ -171,16 +171,17 @@ func (w *WhenExpr) UnmarshalYAML(value *yaml.Node) error {
 
 func (s *Scenario) UnmarshalYAML(value *yaml.Node) error {
 	type plain struct {
-		Describe    string            `yaml:"describe"`
-		Env         map[string]string `yaml:"env"`
-		Post        PostAction        `yaml:"post"`
-		Requires    StringOrList      `yaml:"requires"`
-		Needs       StringOrList      `yaml:"needs"`
-		Cues        []CueRef          `yaml:"cues"`
-		Checks      []CueRef          `yaml:"checks"`
-		Restore     []CueRef          `yaml:"restore"`
-		SuccessWhen string            `yaml:"success_when"`
-		OnError     string            `yaml:"on_error"`
+		Describe         string            `yaml:"describe"`
+		Env              map[string]string `yaml:"env"`
+		Post             PostAction        `yaml:"post"`
+		Requires         StringOrList      `yaml:"requires"`
+		Needs            StringOrList      `yaml:"needs"`
+		CompensationHint string            `yaml:"compensation_hint"`
+		Cues             []CueRef          `yaml:"cues"`
+		Checks           []CueRef          `yaml:"checks"`
+		Compensate       []CueRef          `yaml:"compensate"`
+		SuccessWhen      string            `yaml:"success_when"`
+		OnError          string            `yaml:"on_error"`
 	}
 	var p plain
 	if err := value.Decode(&p); err != nil {
@@ -191,7 +192,8 @@ func (s *Scenario) UnmarshalYAML(value *yaml.Node) error {
 	s.Post = p.Post
 	s.Cues = p.Cues
 	s.Checks = p.Checks
-	s.Restore = p.Restore
+	s.Compensate = p.Compensate
+	s.CompensationHint = p.CompensationHint
 	s.SuccessWhen = p.SuccessWhen
 	s.OnError = p.OnError
 	if len(p.Requires) > 0 {
@@ -202,12 +204,14 @@ func (s *Scenario) UnmarshalYAML(value *yaml.Node) error {
 	return nil
 }
 
-// UnmarshalYAML for CueRestore handles the polymorphic forms:
-//   - rollback: true         → {Enabled: true}
-//   - rollback: false        → {Enabled: false}
-//   - rollback: "shell cmd"  → {Enabled: true, Shell: "shell cmd"}
-//   - rollback: {shell: ..., sudo: ...} → full object
-func (r *CueRestore) UnmarshalYAML(value *yaml.Node) error {
+// UnmarshalYAML for CueCompensation handles the polymorphic forms:
+//   - compensation: true              → {Enabled: true}
+//   - compensation: false             → {Enabled: false}
+//   - compensation: "shell cmd"       → {Enabled: true, Shell: "shell cmd"}
+//   - compensation: defer             → {Enabled: true, Defer: true}
+//   - compensation: interactive       → {Enabled: true, Interactive: true}
+//   - compensation: {shell: ..., sudo: ...} → full object
+func (r *CueCompensation) UnmarshalYAML(value *yaml.Node) error {
 	if value.Kind == yaml.ScalarNode {
 		switch value.Value {
 		case "true":
@@ -217,6 +221,9 @@ func (r *CueRestore) UnmarshalYAML(value *yaml.Node) error {
 		case "defer":
 			r.Enabled = true
 			r.Defer = true
+		case "interactive":
+			r.Enabled = true
+			r.Interactive = true
 		default:
 			r.Enabled = true
 			r.Shell = value.Value
@@ -255,7 +262,7 @@ func (c *CueRef) UnmarshalYAML(value *yaml.Node) error {
 		Preserve        StringOrList      `yaml:"preserve"`
 		Mode            string            `yaml:"mode"`
 		If              string            `yaml:"if"`
-		AffectsState  bool              `yaml:"affects_release"`
+		AffectsState  bool              `yaml:"affects_state"`
 		ChangedWhen     WhenExpr          `yaml:"changed_when"`
 		FailedWhen      WhenExpr          `yaml:"failed_when"`
 		ContinueOnError bool              `yaml:"continue_on_error"`
@@ -267,8 +274,9 @@ func (c *CueRef) UnmarshalYAML(value *yaml.Node) error {
 		Binary          string            `yaml:"binary"`
 		ServiceFile     string            `yaml:"service_file"`
 		Health          string            `yaml:"health"`
-		Commands        map[string]string `yaml:"commands"`
-		Restore         *CueRestore       `yaml:"restore"`
+		Commands         map[string]string  `yaml:"commands"`
+		Compensation     *CueCompensation   `yaml:"compensation"`
+		CompensationHint string             `yaml:"compensation_hint"`
 	}
 	var p plain
 	if err := value.Decode(&p); err != nil {
@@ -308,7 +316,8 @@ func (c *CueRef) UnmarshalYAML(value *yaml.Node) error {
 	c.ServiceFile = p.ServiceFile
 	c.Health = p.Health
 	c.Commands = p.Commands
-	c.Restore = p.Restore
+	c.Compensation = p.Compensation
+	c.CompensationHint = p.CompensationHint
 	// Infer nature: service when manager: is set and nature is not specified.
 	if c.Nature == "" && c.Manager != "" {
 		c.Nature = "service"

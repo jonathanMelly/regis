@@ -65,7 +65,7 @@ type ManifestInfo struct {
 // deployed=true uses Status.Applied() labels (post-run); false uses Status.String() (rdiff).
 // Details (diffs, MD5, errors) appear inline after each scenario's cue rows when present.
 // verbose=true shows diffs and stdout for changed cues.
-// An optional ManifestInfo shows the last deployed release above the first scenario separator.
+// An optional ManifestInfo shows the last deployed state above the first scenario separator.
 func RenderTable(results []cue.Result, target string, total time.Duration, deployed bool, level Level, verbose bool, manifest ...*ManifestInfo) string {
 	const col2 = 9  // Size column inner width
 	const col3 = 6  // Time column inner width
@@ -367,7 +367,7 @@ func cueDetailLines(r cue.Result, showDiff bool, showStdout bool, minfo *Manifes
 }
 
 // AppendDetails returns extra lines for failed/skipped/verbose results, appended below the table.
-// An optional ManifestInfo provides release/date context for drift messages.
+// An optional ManifestInfo provides state/date context for drift messages.
 func AppendDetails(results []cue.Result, verbose bool, manifest ...*ManifestInfo) string {
 	var minfo *ManifestInfo
 	if len(manifest) > 0 {

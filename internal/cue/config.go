@@ -3,7 +3,7 @@
 // Uploads a text file (nginx conf, YAML, etc.). Change detection via unified text diff shown in output.
 // Local file content is rendered with target env vars (${VAR} substitution) before comparison.
 // Direction: local→remote.
-// restore: true — re-deploy previous version from git at the recorded state ref.
+// compensation: file state is not automatically restored — use `regis state hint` for recovery guidance.
 package cue
 
 import (

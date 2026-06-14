@@ -21,7 +21,7 @@ func newStateCommand(gf *GlobalFlags) *cobra.Command {
 		Long: `regis state — commands for inspecting what regis last deployed.
 
 State records the git ref, per-cue file inventory (remote paths + hashes),
-and deployment metadata. Used for drift detection and rollback guidance.`,
+and deployment metadata. Used for drift detection and recovery guidance.`,
 	}
 	st.AddCommand(newStateShowCommand(gf))
 	st.AddCommand(newStateListCommand(gf))
@@ -439,9 +439,9 @@ state data; they are skipped with a note.`,
 func newStateHintCommand(gf *GlobalFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:   "hint [state-id]",
-		Short: "show rollback guidance for a state",
-		Long: `hint displays what you need to know to roll back to a previous state.
-It shows the git ref to deploy and any rollback_hint entries from regis.yml.
+		Short: "show recovery guidance for a state",
+		Long: `hint displays what you need to know to recover to a previous state.
+It shows the git ref to deploy and any compensation_hint entries from regis.yml.
 
 No args: hints for the previous state (one before live).
 With id: hints for that specific state.`,
@@ -511,26 +511,26 @@ With id: hints for that specific state.`,
 					}
 				}
 
-				// Per-scenario and per-cue rollback_hints from config.
+				// Per-scenario and per-cue compensation_hint from config.
 				var hasHints bool
 				for _, scName := range targetState.Scenarios {
 					sc, ok := cfg.Scenarios[scName]
 					if !ok {
 						continue
 					}
-					hint := fillPlaceholders(sc.RollbackHint, targetState.GitRef)
+					hint := fillPlaceholders(sc.CompensationHint, targetState.GitRef)
 					if hint != "" {
 						if !hasHints {
-							fmt.Println("── rollback hints ──────────────────────────────────────")
+							fmt.Println("── compensation hints ──────────────────────────────────")
 							hasHints = true
 						}
 						fmt.Printf("[%s] %s\n", scName, hint)
 					}
 					for _, cr := range sc.Cues {
-						cueHint := fillPlaceholders(cr.RollbackHint, targetState.GitRef)
+						cueHint := fillPlaceholders(cr.CompensationHint, targetState.GitRef)
 						if cueHint != "" {
 							if !hasHints {
-								fmt.Println("── rollback hints ──────────────────────────────────────")
+								fmt.Println("── compensation hints ──────────────────────────────────")
 								hasHints = true
 							}
 							fmt.Printf("  [%s] %s\n", cr.Name, cueHint)

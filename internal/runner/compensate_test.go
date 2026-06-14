@@ -1,4 +1,4 @@
-// internal/runner/rollback_test.go
+// internal/runner/compensate_test.go
 package runner
 
 import (
@@ -30,7 +30,9 @@ type mockSSHConn struct {
 }
 
 func (m *mockSSHConn) Upload(_, _ string, _ fs.FileMode, _ bool) error { return nil }
-func (m *mockSSHConn) UploadBytes(_ []byte, _ string, _ fs.FileMode, _ bool) error { return nil }
+func (m *mockSSHConn) UploadBytes(_ []byte, _ string, _ fs.FileMode, _ bool) error {
+	return nil
+}
 func (m *mockSSHConn) Run(cmd string) (string, string, int, error) {
 	if m.runFn != nil {
 		m.runFn(cmd)
@@ -59,11 +61,21 @@ var _ cue.SSHConn = (*mockSSHConn)(nil)
 
 func TestEffectiveOnError_scenarioOverride(t *testing.T) {
 	cfg := &config.Config{
+		Scenarios: map[string]config.Scenario{"Deploy": {OnError: "compensate"}},
+		Run:       config.RunConfig{OnError: "halt"},
+	}
+	if got := effectiveOnError(cfg, "Deploy"); got != "compensate" {
+		t.Errorf("expected compensate, got %q", got)
+	}
+}
+
+func TestEffectiveOnError_restoreAliasNormalized(t *testing.T) {
+	cfg := &config.Config{
 		Scenarios: map[string]config.Scenario{"Deploy": {OnError: "restore"}},
 		Run:       config.RunConfig{OnError: "halt"},
 	}
-	if got := effectiveOnError(cfg, "Deploy"); got != "restore" {
-		t.Errorf("expected restore, got %q", got)
+	if got := effectiveOnError(cfg, "Deploy"); got != "compensate" {
+		t.Errorf("expected compensate (normalized from restore), got %q", got)
 	}
 }
 
@@ -91,18 +103,18 @@ func TestEffectiveOnError_unknownScenario(t *testing.T) {
 	}
 }
 
-func TestEffectiveOnError_inferredFromCueRestore(t *testing.T) {
+func TestEffectiveOnError_inferredFromCueCompensation(t *testing.T) {
 	cfg := &config.Config{
 		Scenarios: map[string]config.Scenario{
 			"Deploy": {
 				Cues: []config.CueRef{
-					{Name: "bin", Nature: "binary", Restore: &config.CueRestore{Enabled: true}},
+					{Name: "bin", Nature: "binary", Compensation: &config.CueCompensation{Enabled: true}},
 				},
 			},
 		},
 	}
-	if got := effectiveOnError(cfg, "Deploy"); got != "restore" {
-		t.Errorf("expected restore inferred from cue, got %q", got)
+	if got := effectiveOnError(cfg, "Deploy"); got != "compensate" {
+		t.Errorf("expected compensate inferred from cue, got %q", got)
 	}
 }
 
@@ -111,7 +123,7 @@ func TestEffectiveOnError_explicitOverridesInferred(t *testing.T) {
 		Scenarios: map[string]config.Scenario{
 			"Deploy": {
 				OnError: "continue",
-				Cues:    []config.CueRef{{Name: "bin", Restore: &config.CueRestore{Enabled: true}}},
+				Cues:    []config.CueRef{{Name: "bin", Compensation: &config.CueCompensation{Enabled: true}}},
 			},
 		},
 	}
@@ -120,16 +132,16 @@ func TestEffectiveOnError_explicitOverridesInferred(t *testing.T) {
 	}
 }
 
-func TestEffectiveOnError_disabledRestoreNotInferred(t *testing.T) {
+func TestEffectiveOnError_disabledCompensationNotInferred(t *testing.T) {
 	cfg := &config.Config{
 		Scenarios: map[string]config.Scenario{
 			"Deploy": {
-				Cues: []config.CueRef{{Name: "bin", Restore: &config.CueRestore{Enabled: false}}},
+				Cues: []config.CueRef{{Name: "bin", Compensation: &config.CueCompensation{Enabled: false}}},
 			},
 		},
 	}
 	if got := effectiveOnError(cfg, "Deploy"); got != "halt" {
-		t.Errorf("expected halt (disabled restore not inferred), got %q", got)
+		t.Errorf("expected halt (disabled compensation not inferred), got %q", got)
 	}
 }
 
@@ -165,9 +177,9 @@ func TestFailingScenarioName_inlineRef(t *testing.T) {
 	}
 }
 
-// ── executeRestore ────────────────────────────────────────────────────────────
+// ── executeCompensation ───────────────────────────────────────────────────────
 
-func restoreCall(
+func compensateCall(
 	conn cue.SSHConn,
 	cfg *config.Config,
 	order []string,
@@ -175,22 +187,22 @@ func restoreCall(
 	dispatch Dispatch,
 	results []cue.Result,
 	steps []Step,
-) *RestoreOutcome {
-	return executeRestore(context.Background(), conn, cfg, order, deployID,
-		config.Target{}, dispatch, nil, results, steps)
+) *CompensateOutcome {
+	return executeCompensation(context.Background(), conn, cfg, order, deployID,
+		config.Target{}, dispatch, nil, results, steps, nil)
 }
 
-func TestExecuteRestore_actionShellRuns(t *testing.T) {
+func TestExecuteCompensation_actionShellRuns(t *testing.T) {
 	var runCmds []string
 	conn := &mockSSHConn{runFn: func(cmd string) { runCmds = append(runCmds, cmd) }}
 
 	cfg := &config.Config{Scenarios: map[string]config.Scenario{"Deploy": {}}}
 	steps := []Step{{CueRef: config.CueRef{Name: "go-offline", Nature: "action",
-		Restore: &config.CueRestore{Enabled: true, Shell: "rm -f maintenance.flag"}},
+		Compensation: &config.CueCompensation{Enabled: true, Shell: "rm -f maintenance.flag"}},
 		OnErrorScenario: "Deploy"}}
 	results := []cue.Result{{CueName: "go-offline", Status: cue.StatusChanged}}
 
-	out := restoreCall(conn, cfg, []string{"Deploy"}, "v-fail", Dispatch{}, results, steps)
+	out := compensateCall(conn, cfg, []string{"Deploy"}, "v-fail", Dispatch{}, results, steps)
 	if out.Err != nil {
 		t.Fatalf("unexpected error: %v", out.Err)
 	}
@@ -199,17 +211,17 @@ func TestExecuteRestore_actionShellRuns(t *testing.T) {
 	}
 }
 
-func TestExecuteRestore_sudoUsesRunSudo(t *testing.T) {
+func TestExecuteCompensation_sudoUsesRunSudo(t *testing.T) {
 	var sudoCmds []string
 	conn := &mockSSHConn{runSudoFn: func(cmd string) { sudoCmds = append(sudoCmds, cmd) }}
 
 	cfg := &config.Config{Scenarios: map[string]config.Scenario{"Deploy": {}}}
 	steps := []Step{{CueRef: config.CueRef{Name: "stop-svc", Nature: "action",
-		Restore: &config.CueRestore{Enabled: true, Shell: "systemctl stop myapp", Sudo: true}},
+		Compensation: &config.CueCompensation{Enabled: true, Shell: "systemctl stop myapp", Sudo: true}},
 		OnErrorScenario: "Deploy"}}
 	results := []cue.Result{{CueName: "stop-svc", Status: cue.StatusChanged}}
 
-	out := restoreCall(conn, cfg, []string{"Deploy"}, "v-fail", Dispatch{}, results, steps)
+	out := compensateCall(conn, cfg, []string{"Deploy"}, "v-fail", Dispatch{}, results, steps)
 	if out.Err != nil {
 		t.Fatalf("unexpected error: %v", out.Err)
 	}
@@ -218,15 +230,15 @@ func TestExecuteRestore_sudoUsesRunSudo(t *testing.T) {
 	}
 }
 
-func TestExecuteRestore_reverseOrder(t *testing.T) {
+func TestExecuteCompensation_reverseOrder(t *testing.T) {
 	var order []string
 	conn := &mockSSHConn{runFn: func(cmd string) { order = append(order, cmd) }}
 
 	cfg := &config.Config{Scenarios: map[string]config.Scenario{"Deploy": {}}}
 	steps := []Step{
-		{CueRef: config.CueRef{Name: "a", Nature: "action", Restore: &config.CueRestore{Enabled: true, Shell: "undo-a"}}},
-		{CueRef: config.CueRef{Name: "b", Nature: "action", Restore: &config.CueRestore{Enabled: true, Shell: "undo-b"}}},
-		{CueRef: config.CueRef{Name: "c", Nature: "action", Restore: &config.CueRestore{Enabled: true, Shell: "undo-c"}}},
+		{CueRef: config.CueRef{Name: "a", Nature: "action", Compensation: &config.CueCompensation{Enabled: true, Shell: "undo-a"}}},
+		{CueRef: config.CueRef{Name: "b", Nature: "action", Compensation: &config.CueCompensation{Enabled: true, Shell: "undo-b"}}},
+		{CueRef: config.CueRef{Name: "c", Nature: "action", Compensation: &config.CueCompensation{Enabled: true, Shell: "undo-c"}}},
 	}
 	results := []cue.Result{
 		{CueName: "a", Status: cue.StatusChanged},
@@ -234,7 +246,7 @@ func TestExecuteRestore_reverseOrder(t *testing.T) {
 		{CueName: "c", Status: cue.StatusChanged},
 	}
 
-	out := restoreCall(conn, cfg, nil, "v-fail", Dispatch{}, results, steps)
+	out := compensateCall(conn, cfg, nil, "v-fail", Dispatch{}, results, steps)
 	if out.Err != nil {
 		t.Fatalf("unexpected error: %v", out.Err)
 	}
@@ -244,23 +256,23 @@ func TestExecuteRestore_reverseOrder(t *testing.T) {
 	}
 }
 
-func TestExecuteRestore_skippedCuesExcluded(t *testing.T) {
+func TestExecuteCompensation_skippedCuesExcluded(t *testing.T) {
 	var runCmds []string
 	conn := &mockSSHConn{runFn: func(cmd string) { runCmds = append(runCmds, cmd) }}
 
 	cfg := &config.Config{Scenarios: map[string]config.Scenario{"Deploy": {}}}
 	steps := []Step{
 		{CueRef: config.CueRef{Name: "skipped-cue", Nature: "action",
-			Restore: &config.CueRestore{Enabled: true, Shell: "should-not-run"}}},
+			Compensation: &config.CueCompensation{Enabled: true, Shell: "should-not-run"}}},
 		{CueRef: config.CueRef{Name: "ran-cue", Nature: "action",
-			Restore: &config.CueRestore{Enabled: true, Shell: "should-run"}}},
+			Compensation: &config.CueCompensation{Enabled: true, Shell: "should-run"}}},
 	}
 	results := []cue.Result{
 		{CueName: "skipped-cue", Status: cue.StatusSkipped},
 		{CueName: "ran-cue", Status: cue.StatusChanged},
 	}
 
-	out := restoreCall(conn, cfg, nil, "v-fail", Dispatch{}, results, steps)
+	out := compensateCall(conn, cfg, nil, "v-fail", Dispatch{}, results, steps)
 	if out.Err != nil {
 		t.Fatalf("unexpected error: %v", out.Err)
 	}
@@ -269,19 +281,19 @@ func TestExecuteRestore_skippedCuesExcluded(t *testing.T) {
 	}
 }
 
-func TestExecuteRestore_fileNature_noShell_skipped(t *testing.T) {
-	// File natures without a restore.shell are silently skipped (no automated file restore).
+func TestExecuteCompensation_fileNature_noShell_skipped(t *testing.T) {
+	// File natures with compensation: true (no shell) are silently skipped.
 	var runCmds []string
 	conn := &mockSSHConn{runFn: func(cmd string) { runCmds = append(runCmds, cmd) }}
 
 	cfg := &config.Config{Scenarios: map[string]config.Scenario{"Deploy": {}}}
 	steps := []Step{
 		{CueRef: config.CueRef{Name: "app-binary", Nature: "binary",
-			Restore: &config.CueRestore{Enabled: true}}}, // no Shell
+			Compensation: &config.CueCompensation{Enabled: true}}}, // no Shell
 	}
 	results := []cue.Result{{CueName: "app-binary", Status: cue.StatusChanged}}
 
-	out := restoreCall(conn, cfg, nil, "v-fail", Dispatch{}, results, steps)
+	out := compensateCall(conn, cfg, nil, "v-fail", Dispatch{}, results, steps)
 	if out.Err != nil {
 		t.Fatalf("unexpected error: %v", out.Err)
 	}
@@ -290,33 +302,33 @@ func TestExecuteRestore_fileNature_noShell_skipped(t *testing.T) {
 	}
 }
 
-func TestExecuteRestore_actionError_stopsRestore(t *testing.T) {
+func TestExecuteCompensation_actionError_stopsCompensation(t *testing.T) {
 	conn := &mockSSHConn{runErr: fmt.Errorf("connection lost")}
 
 	cfg := &config.Config{Scenarios: map[string]config.Scenario{"Deploy": {}}}
 	steps := []Step{{CueRef: config.CueRef{Name: "go-offline", Nature: "action",
-		Restore: &config.CueRestore{Enabled: true, Shell: "some-cmd"}},
+		Compensation: &config.CueCompensation{Enabled: true, Shell: "some-cmd"}},
 		OnErrorScenario: "Deploy"}}
 	results := []cue.Result{{CueName: "go-offline", Status: cue.StatusChanged}}
 
-	out := restoreCall(conn, cfg, nil, "v-fail", Dispatch{}, results, steps)
+	out := compensateCall(conn, cfg, nil, "v-fail", Dispatch{}, results, steps)
 	if out.Err == nil {
 		t.Error("expected error when action compensation fails")
 	}
 }
 
-func TestExecuteRestore_scenarioRestoreRuns(t *testing.T) {
-	var restoreCues []string
+func TestExecuteCompensation_scenarioCompensateRuns(t *testing.T) {
+	var compensateCues []string
 	exec := &funcExecutor{fn: func(cr config.CueRef) cue.Result {
-		restoreCues = append(restoreCues, cr.Name)
+		compensateCues = append(compensateCues, cr.Name)
 		return cue.Result{CueName: cr.Name, Status: cue.StatusChanged}
 	}}
 
 	cfg := &config.Config{
 		Scenarios: map[string]config.Scenario{
 			"Deploy": {
-				Restore: []config.CueRef{
-					{Name: "restore-db", Shell: "php artisan db:restore --label=pre-${DEPLOY_ID}"},
+				Compensate: []config.CueRef{
+					{Name: "restore-db", Shell: "php artisan db:restore --label=pre-${STATE_ID}"},
 				},
 			},
 		},
@@ -324,28 +336,28 @@ func TestExecuteRestore_scenarioRestoreRuns(t *testing.T) {
 	steps := []Step{{CueRef: config.CueRef{Name: "bin", Nature: "binary"}, OnErrorScenario: "Deploy"}}
 	results := []cue.Result{{CueName: "bin", Status: cue.StatusChanged}}
 
-	out := restoreCall(&mockSSHConn{}, cfg, []string{"Deploy"}, "v-fail",
+	out := compensateCall(&mockSSHConn{}, cfg, []string{"Deploy"}, "v-fail",
 		Dispatch{Action: exec}, results, steps)
 	if out.Err != nil {
 		t.Fatalf("unexpected error: %v", out.Err)
 	}
-	if len(restoreCues) != 1 || restoreCues[0] != "restore-db" {
-		t.Errorf("expected scenario-level restore cue to run, got %v", restoreCues)
+	if len(compensateCues) != 1 || compensateCues[0] != "restore-db" {
+		t.Errorf("expected scenario-level compensate cue to run, got %v", compensateCues)
 	}
 }
 
-func TestExecuteRestore_defer_runsAfterRegular(t *testing.T) {
+func TestExecuteCompensation_defer_runsAfterRegular(t *testing.T) {
 	var order []string
 	conn := &mockSSHConn{runFn: func(cmd string) { order = append(order, cmd) }}
 
 	cfg := &config.Config{Scenarios: map[string]config.Scenario{"Deploy": {}}}
 	steps := []Step{
 		{CueRef: config.CueRef{Name: "a", Nature: "action",
-			Restore: &config.CueRestore{Enabled: true, Shell: "undo-a"}}},
+			Compensation: &config.CueCompensation{Enabled: true, Shell: "undo-a"}}},
 		{CueRef: config.CueRef{Name: "b", Nature: "action", Shell: "run-b",
-			Restore: &config.CueRestore{Enabled: true, Defer: true}}},
+			Compensation: &config.CueCompensation{Enabled: true, Defer: true}}},
 		{CueRef: config.CueRef{Name: "c", Nature: "action",
-			Restore: &config.CueRestore{Enabled: true, Shell: "undo-c"}}},
+			Compensation: &config.CueCompensation{Enabled: true, Shell: "undo-c"}}},
 	}
 	results := []cue.Result{
 		{CueName: "a", Status: cue.StatusChanged},
@@ -353,7 +365,7 @@ func TestExecuteRestore_defer_runsAfterRegular(t *testing.T) {
 		{CueName: "c", Status: cue.StatusChanged},
 	}
 
-	out := restoreCall(conn, cfg, nil, "v-fail", Dispatch{}, results, steps)
+	out := compensateCall(conn, cfg, nil, "v-fail", Dispatch{}, results, steps)
 	if out.Err != nil {
 		t.Fatalf("unexpected error: %v", out.Err)
 	}
@@ -364,23 +376,23 @@ func TestExecuteRestore_defer_runsAfterRegular(t *testing.T) {
 	}
 }
 
-func TestExecuteRestore_defer_multipleRunInForwardOrder(t *testing.T) {
+func TestExecuteCompensation_defer_multipleRunInForwardOrder(t *testing.T) {
 	var order []string
 	conn := &mockSSHConn{runFn: func(cmd string) { order = append(order, cmd) }}
 
 	cfg := &config.Config{Scenarios: map[string]config.Scenario{"Deploy": {}}}
 	steps := []Step{
 		{CueRef: config.CueRef{Name: "x", Nature: "action", Shell: "run-x",
-			Restore: &config.CueRestore{Enabled: true, Defer: true}}},
+			Compensation: &config.CueCompensation{Enabled: true, Defer: true}}},
 		{CueRef: config.CueRef{Name: "y", Nature: "action", Shell: "run-y",
-			Restore: &config.CueRestore{Enabled: true, Defer: true}}},
+			Compensation: &config.CueCompensation{Enabled: true, Defer: true}}},
 	}
 	results := []cue.Result{
 		{CueName: "x", Status: cue.StatusChanged},
 		{CueName: "y", Status: cue.StatusChanged},
 	}
 
-	out := restoreCall(conn, cfg, nil, "v-fail", Dispatch{}, results, steps)
+	out := compensateCall(conn, cfg, nil, "v-fail", Dispatch{}, results, steps)
 	if out.Err != nil {
 		t.Fatalf("unexpected error: %v", out.Err)
 	}

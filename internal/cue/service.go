@@ -13,7 +13,7 @@
 // StatusChanged when either check shows a difference.
 // On real run: uploads the service file if changed, then queues a deploy:<name> post-action
 // (systemctl daemon-reload + enable for systemd; crontab entry install for crontab).
-// restore: "cmd" or {shell, sudo} — runs a compensation command when on_error: restore triggers.
+// compensation: "cmd" or {shell, sudo} — runs a compensation command when on_error: compensate triggers.
 package cue
 
 import (

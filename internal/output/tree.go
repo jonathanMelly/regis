@@ -46,7 +46,7 @@ func treeStatusSymbol(r cue.Result, level Level) string {
 // Detail lines (diffs, errors, warnings) appear directly below each cue.
 // showDiff controls whether text diffs appear; showStdout controls stdout/stderr.
 // level enables ANSI color on status symbols when >= Level2.
-// An optional ManifestInfo shows the last deployed release below the header rule.
+// An optional ManifestInfo shows the last deployed state below the header rule.
 func RenderTree(results []cue.Result, target string, total time.Duration,
 	showDiff bool, showStdout bool, level Level, manifest ...*ManifestInfo) string {
 	var minfo *ManifestInfo

@@ -54,12 +54,12 @@ func TestParseManifestSet(t *testing.T) {
 	}
 }
 
-func TestExtractReleaseIDFromManifest(t *testing.T) {
-	yaml := "release: v20260606-143021\ndeployed_at: 2026-06-06\n"
-	if got := cue.ExtractReleaseIDFromManifest(yaml); got != "v20260606-143021" {
+func TestExtractStateIDFromManifest(t *testing.T) {
+	yaml := "id: v20260606-143021\ndeployed_at: 2026-06-06\n"
+	if got := cue.ExtractStateIDFromManifest(yaml); got != "v20260606-143021" {
 		t.Errorf("got %q", got)
 	}
-	if got := cue.ExtractReleaseIDFromManifest("no release here\n"); got != "" {
+	if got := cue.ExtractStateIDFromManifest("no state here\n"); got != "" {
 		t.Errorf("expected empty, got %q", got)
 	}
 }

@@ -25,8 +25,8 @@ Default: writes directly to local source paths (src for binary/config/secret, lo
   - If the local path already exists, fetch notifies and skips it.
   - Use --archive to save to .regis/fetched/ without touching local files.
 
-Also bootstraps the local release archive (.regis-releases/) if release.dir is configured,
-so 'release list' and future rollbacks work on a fresh clone.
+Also bootstraps the local state archive (.regis-states/) if state.dir is configured,
+so 'state list' and future recovery deploys work on a fresh clone.
 
 Useful for disaster recovery, new machine setup, or reverse-engineering a deployment.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -55,7 +55,7 @@ Useful for disaster recovery, new machine setup, or reverse-engineering a deploy
 					}
 					defer conn.Close()
 
-					// Bootstrap local release archive: read the remote manifest to get the
+					// Bootstrap local state archive: read the remote manifest to get the
 					// Read current state ID for display purposes.
 					var snapshotID string
 					if state, stErr := runner.LoadRemoteState(conn, tgt.Dir); stErr == nil {

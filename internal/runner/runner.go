@@ -21,7 +21,7 @@ type Options struct {
 	CheckOnly        bool // compare-only / rdiff — no uploads or remote commands
 	SkipConfirm      bool
 	NatureFilter     []string            // empty = all natures
-	PruneReleases    bool                // prune old state records after a successful deploy
+	PruneStates      bool                // prune old state records after a successful deploy
 	ForceManifest    bool                // deprecated: state is always complete; kept for backward compat
 	AllowDirty       bool                // allow deploy with uncommitted changes (git_ref is approximate)
 	NoGit            bool                // allow deploy without a git repository (no git_ref recorded)
@@ -29,6 +29,7 @@ type Options struct {
 	ScenarioFilter   []string            // if non-empty, keep only steps whose ScenarioName is in this set — rdiff only
 	CueFilter        []string            // if non-empty, keep only steps whose Name is in this set — rdiff only
 	ScopedCues       map[string][]string // scenario → cue names; keep only those cues, error if any are not found
+	CompensateUI     CompensateUI        // nil = auto-run all compensations (CI); non-nil = interactive prompts
 }
 
 // Dispatch maps cue nature to executor.
@@ -47,7 +48,7 @@ type Dispatch struct {
 }
 
 // Run executes a list of scenario names against one target.
-// After a successful deploy (any StatusChanged release-affecting cue), writes .regis-release.
+// After a successful deploy (any StatusChanged state-affecting cue), writes .regis-state.
 func Run(ctx context.Context, cfg *config.Config, scenarioNames []string, target config.Target, opts Options, dispatch Dispatch, onResult func(cue.Result)) (*RunResult, error) {
 	start := time.Now()
 
@@ -56,10 +57,10 @@ func Run(ctx context.Context, cfg *config.Config, scenarioNames []string, target
 		return nil, fmt.Errorf("topo sort: %w", err)
 	}
 
-	// Generate release ID now so ${RELEASE_ID} is consistent across all cues
-	// and matches any pre-deploy backup labels (e.g. backup --label=pre-${RELEASE_ID}).
-	releaseID := NewStateID()
-	baseEnv := map[string]string{"RELEASE_ID": releaseID}
+	// Generate state ID now so ${STATE_ID} is consistent across all cues
+	// and matches any pre-deploy backup labels (e.g. backup --label=pre-${STATE_ID}).
+	stateID := NewStateID()
+	baseEnv := map[string]string{"STATE_ID": stateID}
 
 	var steps []Step
 	for _, scName := range order {
@@ -287,8 +288,8 @@ func Run(ctx context.Context, cfg *config.Config, scenarioNames []string, target
 	if phaseErr != nil {
 		// Check on_error policy for the failing scenario.
 		failSc := failingScenarioName(results, remotePhase.Steps)
-		if effectiveOnError(cfg, failSc) == "restore" {
-			rr.RestoreOutcome = executeRestore(ctx, conn, cfg, order, releaseID, target, dispatch, onResult, results, remotePhase.Steps)
+		if effectiveOnError(cfg, failSc) == "compensate" {
+			rr.CompensateOutcome = executeCompensation(ctx, conn, cfg, order, stateID, target, dispatch, onResult, results, remotePhase.Steps, opts.CompensateUI)
 		}
 		rr.Err = phaseErr
 		rr.Elapsed = time.Since(start)
@@ -347,7 +348,7 @@ func Run(ctx context.Context, cfg *config.Config, scenarioNames []string, target
 			localDir = ".regis-states"
 		}
 		prevState := LatestLocalState(localDir, target.Name)
-		state := BuildState(releaseID, scenarioNames, rr.Results, remotePhase.Steps, target.Dir, target.Name, prevState)
+		state := BuildState(stateID, scenarioNames, rr.Results, remotePhase.Steps, target.Dir, target.Name, prevState)
 		if err := SaveState(state, localDir); err != nil {
 			rr.SystemWarnings = append(rr.SystemWarnings,
 				fmt.Sprintf("state save failed — local tracking degraded: %v", err))
@@ -356,7 +357,7 @@ func Run(ctx context.Context, cfg *config.Config, scenarioNames []string, target
 			rr.SystemWarnings = append(rr.SystemWarnings,
 				fmt.Sprintf("state upload failed — remote tracking degraded: %v", err))
 		}
-		if opts.PruneReleases {
+		if opts.PruneStates {
 			keep := cfg.State.Keep
 			if keep <= 0 {
 				keep = 5

@@ -2,7 +2,7 @@
 // doc:nature secret
 // Uploads an env file. Values are masked in all output. preserve: lists keys never overwritten.
 // Direction: local→remote.
-// restore: true — re-deploy previous version from git at the recorded state ref.
+// compensation: file state is not automatically restored — use `regis state hint` for recovery guidance.
 package cue
 
 import (

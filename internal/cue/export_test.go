@@ -22,8 +22,8 @@ func PackCandidateWith(rel string) PackCandidate {
 // ParseManifestSet wraps the internal parseManifestSet for testing.
 func ParseManifestSet(s string) map[string]bool { return parseManifestSet(s) }
 
-// ExtractReleaseIDFromManifest wraps the internal helper for testing.
-func ExtractReleaseIDFromManifest(s string) string { return extractReleaseIDFromManifest(s) }
+// ExtractStateIDFromManifest wraps the internal helper for testing.
+func ExtractStateIDFromManifest(s string) string { return extractStateIDFromManifest(s) }
 
 // DestRelativeToTarget wraps the internal helper for testing.
 func DestRelativeToTarget(dest string) (string, bool) { return destRelativeToTarget(dest) }

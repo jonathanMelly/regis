@@ -146,7 +146,7 @@ const sectionKeyConceptsBody = `
 
 ` + "`requires: [scenario-a, scenario-b]`" + ` declares prerequisites — scenarios that must complete before this one starts. Prerequisites are **deduplicated**: if multiple scenarios all require ` + "`build`" + `, it runs exactly once. ` + "`needs:`" + ` is an accepted alias.
 
-Each scenario in ` + "`requires:`" + ` is **independent**: it runs as its own unit with its own ` + "`on_error`" + ` policy. A failure in a prerequisite does **not** trigger the dependent scenario's ` + "`on_error: restore`" + `. Use inline scenario refs (` + "`{ scenario: x }`" + ` in ` + "`cues:`" + `) when you need the parent's ` + "`on_error`" + ` to cover the referenced scenario's cues.
+Each scenario in ` + "`requires:`" + ` is **independent**: it runs as its own unit with its own ` + "`on_error`" + ` policy. A failure in a prerequisite does **not** trigger the dependent scenario's ` + "`on_error: compensate`" + `. Use inline scenario refs (` + "`{ scenario: x }`" + ` in ` + "`cues:`" + `) when you need the parent's ` + "`on_error`" + ` to cover the referenced scenario's cues.
 
 
 
@@ -194,10 +194,10 @@ Two mechanisms for scenario composition — choose consciously:
 |---|---|---|
 | Deduplication | yes — each scenario runs once even if required by many | no — expands at the call-site position each time |
 | Ordering | all prerequisites complete before parent starts | cues interleave at the exact position in the list |
-| ` + "`on_error`" + ` scope | each scenario is independent — parent's restore does not cover it | parent's ` + "`on_error`" + ` applies — a failure in an inlined cue triggers the composing scenario's rollback |
+| ` + "`on_error`" + ` scope | each scenario is independent — parent's compensate does not cover it | parent's ` + "`on_error`" + ` applies — a failure in an inlined cue triggers the composing scenario's compensation |
 | Use when | "these must finish first; they own their error handling" | "these cues are part of me; restore everything together" |
 
-` + "```yaml\n# requires: — files deploy independently, before deploy starts.\n# If app fails, app's on_error applies (default: halt). deploy's rollback never fires.\ndeploy:\n  requires: [app, config]\n  on_error: restore   # only covers deploy's own cues\n  cues:\n    - name: migrate ...\n\n# inline ref — files are part of deploy. If app's pack cue fails,\n# deploy's on_error: restore fires and rolls back everything.\ndeploy:\n  on_error: restore\n  cues:\n    - { scenario: app }    # expanded inline; parent's on_error covers this\n    - { scenario: config }\n    - name: migrate ...\n```" + `
+` + "```yaml\n# requires: — files deploy independently, before deploy starts.\n# If app fails, app's on_error applies (default: halt). deploy's compensate never fires.\ndeploy:\n  requires: [app, config]\n  on_error: compensate   # only covers deploy's own cues\n  cues:\n    - name: migrate ...\n\n# inline ref — files are part of deploy. If app's pack cue fails,\n# deploy's on_error: compensate fires for everything.\ndeploy:\n  on_error: compensate\n  cues:\n    - { scenario: app }    # expanded inline; parent's on_error covers this\n    - { scenario: config }\n    - name: migrate ...\n```" + `
 
 Narrowing: ` + "`{ scenario: app, cue: source }`" + ` runs only the named cue; ` + "`{ scenario: app, cues: [source, env] }`" + ` runs a subset. Nested refs are supported.`
 
@@ -261,18 +261,18 @@ runs the normal deploy. Because every cue is ` + "`StatusChanged`" + `, the mani
 hashes. Prompts for confirmation unless ` + "`--yes`" + ` is set. Backup path:
 ` + "`<parent_of_target_dir>/<basename>-bak-<timestamp>.tar.gz`" + `.
 
-#### Release history after remediation
+#### State history after remediation
 
 All remediation paths (rebuild, force-manifest, fresh) generate a **new state ID** and append it
 to the archive — they do not rewrite history. After a rebuild following a partial deploy:
 
 ` + "```" + `
 v20260612-143022  ← rebuilt checkpoint (rollback target)
-v20260601-120000  ← partial/broken release (stays in history)
+v20260601-120000  ← partial/broken state (stays in history)
 ` + "```" + `
 
-` + "`release rollback`" + ` with no args picks the entry before the latest, so it naturally lands on the
-rebuild checkpoint, skipping the broken release.
+` + "`state hint`" + ` with no args picks the entry before the latest, so it naturally lands on the
+rebuild checkpoint, skipping the broken state.
 `
 
 // generate writes the AI context document to outFile, sourcing data from the
@@ -467,7 +467,7 @@ func buildDenseSchema(typesFile string) (string, error) {
 	b.WriteString("  <name>:\n")
 	for _, fi := range s["Scenario"] {
 		switch fi.yamlKey {
-		case "cues", "checks", "rollback":
+		case "cues", "checks", "compensate":
 			continue // expanded below
 		}
 		fl("    ", fi.yamlKey, schemaVal(fi, false), schemaComment(fi, false))
@@ -493,8 +493,8 @@ func buildDenseSchema(typesFile string) (string, error) {
 			b.WriteString("        # ── pack / render folder mode ──\n")
 		case "manager":
 			b.WriteString("        # ── service (manager: present infers nature: service) ──\n")
-		case "restore":
-			b.WriteString("        # ── per-cue rollback (infers on_error: restore; true/\"cmd\"/{shell,sudo}/defer) ──\n")
+		case "compensation":
+			b.WriteString("        # ── per-cue compensation (infers on_error: compensate; \"cmd\"/{shell,sudo}/defer/interactive) ──\n")
 		}
 		fl(pfx, fi.yamlKey, schemaVal(fi, cueReq[fi.yamlKey]), schemaComment(fi, cueReq[fi.yamlKey]))
 	}
@@ -503,10 +503,10 @@ func buildDenseSchema(typesFile string) (string, error) {
 	b.WriteString("      - name: <string>       # required\n")
 	b.WriteString("        nature: action       # checks are read-only action cues\n")
 	b.WriteString("        shell: <string>      # probe command\n")
-	// rollback list — actions run on remote after file-snapshot restore
-	b.WriteString("    rollback:                # actions run on remote after snapshot restore when on_error: restore\n")
+	// compensate list — scenario-level compensation actions
+	b.WriteString("    compensate:              # scenario-level actions run when on_error: compensate triggers\n")
 	b.WriteString("      - name: <string>       # required\n")
-	b.WriteString("        shell: <string>      # remote command; $RELEASE_ID is available\n")
+	b.WriteString("        shell: <string>      # remote command; $STATE_ID is available\n")
 	b.WriteString("        sudo: false\n")
 	b.WriteString("\n")
 
@@ -517,12 +517,12 @@ func buildDenseSchema(typesFile string) (string, error) {
 	}
 	b.WriteString("\n")
 
-	// release — show dir with a concrete example path
-	b.WriteString("release:\n")
-	for _, fi := range s["ReleaseConfig"] {
+	// state — show dir with a concrete example path
+	b.WriteString("state:\n")
+	for _, fi := range s["StateConfig"] {
 		val := schemaVal(fi, false)
 		if fi.yamlKey == "dir" {
-			val = "/opt/app/.regis-releases" // representative example
+			val = "/opt/app/.regis-states" // representative example
 		}
 		fl("  ", fi.yamlKey, val, schemaComment(fi, false))
 	}
@@ -854,15 +854,15 @@ func buildSchemaSection(typesFile string) (string, error) {
 
 
 
-	// release
+	// state
 
-	buf.WriteString("### release\n\n")
+	buf.WriteString("### state\n\n")
 
 	buf.WriteString("| field | type | default | description |\n")
 
 	buf.WriteString("|-------|------|---------|-------------|\n")
 
-	for _, fi := range structs["ReleaseConfig"] {
+	for _, fi := range structs["StateConfig"] {
 
 		buf.WriteString(fmt.Sprintf("| `%s` | %s | %s | %s |\n",
 
@@ -870,30 +870,31 @@ func buildSchemaSection(typesFile string) (string, error) {
 
 	}
 
-	buf.WriteString("\n`release.enabled: true` (default) — assigns a state ID per deploy, archives files locally and remotely for rollback. Set to `false` for live deploys with no history.\n")
+	buf.WriteString("\n`state.enabled: true` (default) — assigns a state ID per deploy, archives files locally and remotely. Set to `false` for live deploys with no history.\n")
 
 	buf.WriteString("\n---\n\n")
 
-	buf.WriteString("### Rollback\n\n")
+	buf.WriteString("### Compensation (on_error: compensate)\n\n")
 
-	buf.WriteString("When `on_error: restore` triggers (explicit or inferred from per-cue `rollback:` fields), a deploy failure runs rollback in four steps:\n\n")
-	buf.WriteString("1. Find the most recent local release snapshot (`.regis-releases/<prevID>/`).\n")
-	buf.WriteString("2. **Per-cue compensations** — execute in full **reverse execution order** for every cue where `rollback:` is enabled:\n")
-	buf.WriteString("   - File natures (binary/config/secret/render/pack): re-upload the previous snapshot's files for that cue to their recorded remote paths.\n")
-	buf.WriteString("   - Action natures: run the `rollback: \"shell cmd\"` command on the remote.\n")
-	buf.WriteString("3. If no per-cue `rollback:` was declared (legacy / explicit `on_error: restore`): re-upload **all** artifacts from the previous snapshot.\n")
-	buf.WriteString("4. **Scenario-level rollback block** — the `rollback:` cue list under each scenario runs in topo order.\n\n")
+	buf.WriteString("When `on_error: compensate` triggers (explicit or inferred when any cue has `compensation:` set), a deploy failure runs compensation in three steps:\n\n")
+	buf.WriteString("1. **Per-cue compensations** — execute in full **reverse execution order** for every cue where `compensation:` is enabled and has a shell:\n")
+	buf.WriteString("   - Action/service natures: run the `compensation: \"shell cmd\"` command on the remote.\n")
+	buf.WriteString("   - File natures (binary/config/secret/render/pack): no automated file restore — use `regis state hint` for guidance.\n")
+	buf.WriteString("2. **Deferred compensations** — cues with `compensation: defer` re-run their own `shell:` in forward order after all regular compensations complete.\n")
+	buf.WriteString("3. **Scenario-level compensate: block** — action cues listed under `compensate:` run in topo order. `$STATE_ID` is available.\n\n")
 
-	buf.WriteString("**Inferred `on_error: restore`**: if any direct cue in a scenario declares `rollback: true` or `rollback: \"cmd\"`, the runner automatically treats that scenario as `on_error: restore` — no explicit setting needed.\n\n")
+	buf.WriteString("**Inferred `on_error: compensate`**: if any direct cue in a scenario declares `compensation:`, the runner automatically treats that scenario as `on_error: compensate` — no explicit setting needed.\n\n")
 
-	buf.WriteString("**Per-cue rollback syntax** (on any cue in `cues:`):\n\n")
-	buf.WriteString("```yaml\n# File natures — restore from previous snapshot\n- name: frontend\n  nature: pack\n  src: dist/**\n  dest: ./\n  rollback: true          # restores all pack files from previous snapshot\n\n# Action natures — run a compensation command\n- name: go-offline\n  shell: touch maintenance.flag\n  rollback: \"rm -f maintenance.flag\"   # undo: remove the flag\n\n# Or with sudo:\n- name: deploy-service\n  shell: systemctl start myapp\n  rollback:\n    shell: systemctl stop myapp\n    sudo: true\n\n# rollback: defer — re-run this cue's shell AFTER all per-cue file restores complete.\n# Use when the command must reconcile with restored files (e.g. dependency install).\n- name: install-deps\n  shell: composer install\n  rollback: defer         # skipped in reverse phase; re-run after vendor/ is restored\n```\n\n")
+	buf.WriteString("**Interactive prompt**: when running in a terminal, each step prompts the operator: `[enter] run   [s] open shell   [k] skip   [q] stop all`. In CI (no TTY), runs automatically.\n\n")
 
-	buf.WriteString("`$RELEASE_ID` is injected into the env of every cue and every rollback action at deploy start, so pre-deploy backup labels and rollback restore labels match:\n\n")
+	buf.WriteString("**Per-cue compensation syntax** (on any cue in `cues:`):\n\n")
+	buf.WriteString("```yaml\n# Action natures — run a compensation command\n- name: go-offline\n  shell: touch maintenance.flag\n  compensation: \"rm -f maintenance.flag\"   # undo: remove the flag\n\n# Or with sudo:\n- name: deploy-service\n  shell: systemctl start myapp\n  compensation:\n    shell: systemctl stop myapp\n    sudo: true\n\n# compensation: defer — re-run this cue's shell AFTER all regular compensations complete.\n- name: install-deps\n  shell: composer install\n  compensation: defer\n\n# compensation: interactive — drop to operator shell instead of running a preset command.\n- name: migrate\n  shell: php artisan migrate\n  compensation: interactive\n```\n\n")
 
-	buf.WriteString("```yaml\nDeploy:\n  rollback:                      # scenario-level: runs after per-cue compensations\n    - name: restore-db\n      shell: php artisan db:restore --label=pre-${RELEASE_ID}\n  cues:\n    - name: backup-db\n      shell: php artisan db:backup --label=pre-${RELEASE_ID}\n      # no rollback: — backup can't be undone, just skip\n    - name: go-offline\n      shell: touch maintenance.flag\n      rollback: \"rm -f maintenance.flag\"\n    - name: frontend\n      nature: pack\n      src: dist/**\n      dest: /var/www/\n      rollback: true               # file restore from previous snapshot\n    - name: go-online\n      shell: rm -f maintenance.flag\n      rollback: \"touch maintenance.flag\"   # reverse: put back into maintenance\n```\n\n")
+	buf.WriteString("`$STATE_ID` is injected into the env of every cue and every compensate action at deploy start, so pre-deploy backup labels and compensation restore labels match:\n\n")
 
-	buf.WriteString("Rollback requires `release.enabled: true` (default) so a local snapshot exists. If no previous release is found, rollback runs compensations that have `shell:` but skips file restore. Pack snapshots are included automatically when `rollback: true` is set.\n")
+	buf.WriteString("```yaml\nDeploy:\n  compensate:                    # scenario-level: runs after per-cue compensations\n    - name: restore-db\n      shell: php artisan db:restore --label=pre-${STATE_ID}\n  cues:\n    - name: backup-db\n      shell: php artisan db:backup --label=pre-${STATE_ID}\n    - name: go-offline\n      shell: touch maintenance.flag\n      compensation: \"rm -f maintenance.flag\"\n    - name: migrate\n      shell: php artisan migrate\n      compensation: \"php artisan migrate:rollback\"\n    - name: install-deps\n      shell: composer install\n      compensation: defer          # re-run after db is restored\n```\n\n")
+
+	buf.WriteString("File recovery (binary/config/pack/secret/render): re-deploy from the previous git ref — `regis state hint` shows the git worktree deploy command and any `compensation_hint:` entries.\n")
 
 	buf.WriteString("\n---\n\n")
 
@@ -903,7 +904,7 @@ func buildSchemaSection(typesFile string) (string, error) {
 
 	buf.WriteString("| Tier | Condition | Behaviour |\n")
 	buf.WriteString("|------|-----------|----------|\n")
-	buf.WriteString("| 1 | `.regis-pack-<name>` manifest in dest (or release archive) | Exact diff — only previously-managed files removed. Automatic. |\n")
+	buf.WriteString("| 1 | `.regis-pack-<name>` manifest in dest (or state archive) | Exact diff — only previously-managed files removed. Automatic. |\n")
 	buf.WriteString("| 2 | No manifest; flat src patterns (e.g. `*.html`) | Scope-filtered candidates shown with mtime; auto-prune with `-y`. |\n")
 	buf.WriteString("| 3 | No manifest; no flat patterns | Lists unmanaged files as informational; no deletion. |\n\n")
 
@@ -1205,7 +1206,7 @@ func buildCLISection(cobraDir string) string {
 
 
 
-	// Filter: skip subcommand verbs (service subcommands like "start <name>", release subcommands)
+	// Filter: skip subcommand verbs (service subcommands like "start <name>", state subcommands)
 
 	// and skip the root command "regis" itself.
 
@@ -1215,7 +1216,7 @@ func buildCLISection(cobraDir string) string {
 
 		"enable": true, "disable": true, "logs": true,
 
-		"list": true, "current": true, "restore": true,
+		"list": true, "current": true, "compensate": true,
 
 		"regis": true, // root command
 

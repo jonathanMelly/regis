@@ -94,9 +94,9 @@ type RunResult struct {
 	PostActions     []cue.PostAction
 	Locked          bool             // true when deploy was skipped because target was locked (on_locked: skip)
 	LockReason      string           // human-readable lock skip message
-	RestoreOutcome *RestoreOutcome // non-nil when on_error: rollback was triggered
+	CompensateOutcome *CompensateOutcome // non-nil when on_error: compensate was triggered
 	// SystemWarnings are non-fatal post-deploy failures (manifest write, archive, snapshot).
-	// The deploy itself succeeded; these warn that release tracking may be degraded.
+	// The deploy itself succeeded; these warn that state tracking may be degraded.
 	SystemWarnings  []string
 }
 

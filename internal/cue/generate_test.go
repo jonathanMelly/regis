@@ -111,8 +111,8 @@ func TestGenerateExecutor_uses_local_dir(t *testing.T) {
 	}
 }
 
-func TestGenerateExecutor_not_release_affecting_when_changed(t *testing.T) {
-	// Even if changed_when: true causes StatusChanged, generate is never release-affecting
+func TestGenerateExecutor_not_state_affecting_when_changed(t *testing.T) {
+	// Even if changed_when: true causes StatusChanged, generate is never state-affecting
 	ex := cue.NewGenerateExecutor()
 	tr := true
 	cr := config.CueRef{
@@ -123,6 +123,6 @@ func TestGenerateExecutor_not_release_affecting_when_changed(t *testing.T) {
 	}
 	r, _ := ex.Execute(context.Background(), nil, cr, config.Target{})
 	if r.IsStateAffecting() {
-		t.Error("generate must never be release-affecting")
+		t.Error("generate must never be state-affecting")
 	}
 }

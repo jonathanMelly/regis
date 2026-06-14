@@ -211,18 +211,68 @@ func TestValidate_checkRef_undefined_scenario(t *testing.T) {
 	}
 }
 
-func TestValidate_rollbackRef_undefined_scenario(t *testing.T) {
+func TestValidate_compensateRef_undefined_scenario(t *testing.T) {
 	c := minimalCfg()
 	c.Scenarios["deploy"] = config.Scenario{
-		Cues:     []config.CueRef{{Name: "x", Nature: "action", Shell: "echo hi"}},
-		Restore: []config.CueRef{{ScenarioRef: "no-such-scenario"}},
+		Cues:       []config.CueRef{{Name: "x", Nature: "action", Shell: "echo hi"}},
+		Compensate: []config.CueRef{{ScenarioRef: "no-such-scenario"}},
 	}
 	errs := config.Validate(c)
 	if len(errs) == 0 {
-		t.Fatal("expected error: rollback references undefined scenario")
+		t.Fatal("expected error: compensate: block references undefined scenario")
 	}
 	if !strings.Contains(errs[0].Error(), "no-such-scenario") {
 		t.Errorf("error should name the undefined scenario, got: %v", errs[0])
+	}
+}
+
+func TestValidateWarnings_fileNatureCompensationTrue(t *testing.T) {
+	c := minimalCfg()
+	c.Scenarios["deploy"] = config.Scenario{
+		Cues: []config.CueRef{{
+			Name:         "app",
+			Nature:       "binary",
+			Src:          config.StringOrList{"./bin/app"},
+			Dest:         "app",
+			Compensation: &config.CueCompensation{Enabled: true},
+		}},
+	}
+	warns := config.ValidateWarnings(c)
+	if len(warns) == 0 {
+		t.Error("expected warning for file nature with compensation: true")
+	}
+}
+
+func TestValidateWarnings_fileNatureCompensationShell(t *testing.T) {
+	c := minimalCfg()
+	c.Scenarios["deploy"] = config.Scenario{
+		Cues: []config.CueRef{{
+			Name:         "app",
+			Nature:       "binary",
+			Src:          config.StringOrList{"./bin/app"},
+			Dest:         "app",
+			Compensation: &config.CueCompensation{Enabled: true, Shell: "clear-cdn-cache.sh"},
+		}},
+	}
+	warns := config.ValidateWarnings(c)
+	if len(warns) == 0 {
+		t.Error("expected warning for file nature with compensation shell")
+	}
+}
+
+func TestValidateWarnings_actionNatureCompensation_noWarning(t *testing.T) {
+	c := minimalCfg()
+	c.Scenarios["deploy"] = config.Scenario{
+		Cues: []config.CueRef{{
+			Name:         "migrate",
+			Nature:       "action",
+			Shell:        "php artisan migrate",
+			Compensation: &config.CueCompensation{Enabled: true, Shell: "php artisan migrate:rollback"},
+		}},
+	}
+	warns := config.ValidateWarnings(c)
+	if len(warns) != 0 {
+		t.Errorf("expected no warnings for action nature, got: %v", warns)
 	}
 }
 

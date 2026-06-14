@@ -17,13 +17,12 @@
 //
 // Prune strategy (three tiers, first match wins):
 //
-//	Tier 1  — managed-file manifest (.regis-pack-<name> in dest or release archive): exact diff, automatic
+//	Tier 1  — managed-file manifest (.regis-pack-<name> in dest or state archive): exact diff, automatic
 //	Tier 2  — src-scope filter + mtime: shows candidates; auto-prunes with --yes
 //	Tier 3  — informational: lists unmanaged files, no deletion
 //
 // The managed manifest is always written after a successful deploy so tier 1 is ready on the next run.
-// restore: true — re-deploy previous version from git at the recorded state ref. Pack files are
-// automatically included in the snapshot when rollback: true is set.
+// compensation: file state is not automatically restored — use `regis state hint` for recovery guidance.
 package cue
 
 import (
@@ -468,7 +467,7 @@ func (e *PackExecutor) runPrune(cr config.CueRef, target config.Target, remoteDe
 	if report, ok := e.pruneTier1a(cr.Name, remoteDest, sep, localRelPaths, useSudo); ok {
 		return report, true
 	}
-	// Tier 1b/1c: managed manifest or file listing from release archive.
+	// Tier 1b/1c: managed manifest or file listing from state archive.
 	if report, ok := e.pruneTier1bc(cr, target, remoteDest, sep, localRelPaths, useSudo); ok {
 		return report, true
 	}
@@ -506,23 +505,23 @@ func (e *PackExecutor) pruneTier1a(cueName, remoteDest, sep string, localRelPath
 	return fmt.Sprintf("%d file(s) pruned [manifest]: %s", len(pruned), strings.Join(pruned, ", ")), true
 }
 
-// pruneTier1bc looks for the managed manifest or a file listing inside the release archive.
+// pruneTier1bc looks for the managed manifest or a file listing inside the state archive.
 func (e *PackExecutor) pruneTier1bc(cr config.CueRef, target config.Target, remoteDest, sep string, localRelPaths map[string]bool, useSudo bool) (string, bool) {
-	// Read the current release manifest to learn the previous release ID.
-	raw, _, _, err := e.conn.Run("cat " + shellQuote(target.Dir+"/.regis-release") + " 2>/dev/null")
+	// Read the current state manifest to learn the previous state ID.
+	raw, _, _, err := e.conn.Run("cat " + shellQuote(target.Dir+"/.regis-state") + " 2>/dev/null")
 	if err != nil || strings.TrimSpace(raw) == "" {
 		return "", false
 	}
-	prevID := extractReleaseIDFromManifest(raw)
+	prevID := extractStateIDFromManifest(raw)
 	if prevID == "" {
 		return "", false
 	}
 
-	releaseDir := e.releaseRemoteDir
-	if releaseDir == "" {
-		releaseDir = target.Dir + "/.regis-releases"
+	stateDir := e.releaseRemoteDir
+	if stateDir == "" {
+		stateDir = target.Dir + "/.regis-states"
 	}
-	archiveBase := releaseDir + "/" + prevID
+	archiveBase := stateDir + "/" + prevID
 
 	destRel, isRel := destRelativeToTarget(cr.Dest)
 	if !isRel {
@@ -711,13 +710,13 @@ func parseManifestSet(s string) map[string]bool {
 	return m
 }
 
-// extractReleaseIDFromManifest extracts the release ID from a YAML manifest string
-// by scanning for the "release: " line (avoids a yaml.Unmarshal import).
-func extractReleaseIDFromManifest(yamlText string) string {
+// extractStateIDFromManifest extracts the state ID from a YAML manifest string
+// by scanning for the "id: " line (avoids a yaml.Unmarshal import).
+func extractStateIDFromManifest(yamlText string) string {
 	for _, line := range strings.Split(yamlText, "\n") {
 		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "release: ") {
-			return strings.TrimSpace(strings.TrimPrefix(line, "release: "))
+		if strings.HasPrefix(line, "id: ") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "id: "))
 		}
 	}
 	return ""

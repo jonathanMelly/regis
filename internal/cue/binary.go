@@ -2,7 +2,7 @@
 // doc:nature binary
 // Uploads a compiled executable. Change detection: mtime+size fast path, hash fallback.
 // Atomic upload: copies to <dest>.new, then mv. Direction: local→remote.
-// restore: true — re-deploy previous version from git at the recorded state ref.
+// compensation: file state is not automatically restored — use `regis state hint` for recovery guidance.
 package cue
 
 import (

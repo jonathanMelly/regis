@@ -16,6 +16,15 @@ var KnownNatures = map[string]bool{
 	"service":  true,
 }
 
+// fileNatures is the set of natures that deploy files (not commands).
+var fileNatures = map[string]bool{
+	"binary": true,
+	"config": true,
+	"secret": true,
+	"render": true,
+	"pack":   true,
+}
+
 // Validate checks the config for semantic errors and applies nature inference.
 // Returns all errors found; callers typically act on the first.
 func Validate(c *Config) []error {
@@ -83,8 +92,8 @@ func Validate(c *Config) []error {
 				}
 			}
 
-			if cr.Restore != nil && cr.Restore.Defer && cr.Shell == "" {
-				add("scenario %q cue %q: rollback: defer requires a shell: command to re-run", scName, cr.Name)
+			if cr.Compensation != nil && cr.Compensation.Defer && cr.Shell == "" {
+				add("scenario %q cue %q: compensation: defer requires a shell: command to re-run", scName, cr.Name)
 			}
 		}
 		for _, cr := range sc.Checks {
@@ -94,16 +103,43 @@ func Validate(c *Config) []error {
 				}
 			}
 		}
-		for _, cr := range sc.Restore {
+		for _, cr := range sc.Compensate {
 			if cr.ScenarioRef != "" {
 				if _, ok := c.Scenarios[cr.ScenarioRef]; !ok {
-					add("scenario %q: rollback references undefined scenario %q", scName, cr.ScenarioRef)
+					add("scenario %q: compensate: block references undefined scenario %q", scName, cr.ScenarioRef)
 				}
 			}
 		}
 		c.Scenarios[scName] = updated
 	}
 	return errs
+}
+
+// ValidateWarnings returns non-blocking advisory warnings for a validated config.
+// Call after Validate succeeds.
+func ValidateWarnings(c *Config) []string {
+	var warns []string
+	for scName, sc := range c.Scenarios {
+		for _, cr := range sc.Cues {
+			if cr.ScenarioRef != "" || cr.Compensation == nil || !cr.Compensation.Enabled {
+				continue
+			}
+			if fileNatures[cr.Nature] {
+				if cr.Compensation.Shell == "" && !cr.Compensation.Interactive {
+					warns = append(warns, fmt.Sprintf(
+						"scenario %q cue %q (%s): compensation: true has no effect on file natures — file state is not automatically restored; use compensation: \"shell\" if you need a command, or see 'regis state hint'",
+						scName, cr.Name, cr.Nature,
+					))
+				} else {
+					warns = append(warns, fmt.Sprintf(
+						"scenario %q cue %q (%s): compensation: on a file nature will run the shell, but file state is not automatically restored — see 'regis state hint' for full recovery guidance",
+						scName, cr.Name, cr.Nature,
+					))
+				}
+			}
+		}
+	}
+	return warns
 }
 
 func inferNature(c CueRef) (string, error) {

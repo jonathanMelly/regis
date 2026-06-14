@@ -67,7 +67,7 @@ func TestGenerate_AllSectionsPresent(t *testing.T) {
 		{"cues[] section", "### cues[]"},
 		{"service cues section", "### service cues"},
 		{"run section", "### run"},
-		{"release section", "### release"},
+		{"state section", "### state"},
 		{"Nature Types heading", "## Nature Types"},
 		{"binary nature", "binary"},
 		{"config nature", "config"},

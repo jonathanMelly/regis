@@ -9,7 +9,7 @@ import (
 
 type manifestKey struct{}
 
-// Manifest holds release manifest data used during rdiff drift detection.
+// Manifest holds state manifest data used during rdiff drift detection.
 type Manifest struct {
 	ID         string
 	DeployedAt string // formatted for display
@@ -17,7 +17,7 @@ type Manifest struct {
 	Hashes     map[string]string
 }
 
-// WithManifest returns a context carrying the release manifest for drift detection.
+// WithManifest returns a context carrying the state manifest for drift detection.
 func WithManifest(ctx context.Context, m *Manifest) context.Context {
 	return context.WithValue(ctx, manifestKey{}, m)
 }

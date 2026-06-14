@@ -39,12 +39,12 @@ The first target is used by default. `--target <name>` selects by name.
 | `env` | map | Env vars for all cues in this scenario; overrides defaults.env, overridden by cue-level env |
 | `post` | string or object | Remote command (or restart:/reload: shorthand) run once if any remote cue changed |
 | `requires` | string or []string | Scenario names that must complete first (alias: needs) — deduplicated |
-| `rollback_hint` | string | Hint shown by 'regis state hint' — describes how to roll back this scenario. Supports {prev_sha} placeholder. |
+| `compensation_hint` | string | Hint shown by 'regis state hint' — describes how to roll back this scenario. Supports {prev_sha} placeholder. |
 | `cues` | []cue | Ordered list of cues or scenario references |
 | `checks` | []cue | Terminal acceptance phase — read-only probes, run after cues complete |
-| `restore` | []cue | Actions run on the remote after file-snapshot restore when on_error: restore triggers; ${DEPLOY_ID} is available |
+| `compensate` | []cue | Actions run on the remote when on_error: compensate triggers; ${STATE_ID} is available |
 | `success_when` | string | Override for run.success_when: auto | command | service | checks |
-| `on_error` | string | Override for run.on_error: restore | halt | continue (default: halt) |
+| `on_error` | string | Override for run.on_error: compensate | halt | continue (default: halt) |
 
 ---
 
@@ -64,7 +64,7 @@ The first target is used by default. `--target <name>` selects by name.
 | `preserve` | no | Remote keys never overwritten during merge (secret only) |
 | `mode` | no | Remote file permissions, e.g. "600" |
 | `if` | no | Boolean rule or probe — skip cue when false |
-| `affects_state` | no | Mark remote action cue as release-affecting (default false for actions) |
+| `affects_state` | no | Mark remote action cue as state-affecting so it is recorded in the deploy state (default false for actions) |
 | `changed_when` | no | Override change detection — defaults: binary/config/secret/render=MD5 diff, action=always changed, generate=always equal; expressions: "stdout contains X", "stdout !contains X", "stderr contains X", "exit == N", "exit != N"; or changed_when: true to force |
 | `failed_when` | no | Override failure detection — defaults: action/generate=exit != 0, binary/config/secret=upload error; expressions: "exit != 0", "stdout contains ERROR", "stderr !contains OK" |
 | `continue_on_error` | no | true = cue failure does not halt deployment (default false) |
@@ -78,8 +78,8 @@ The first target is used by default. `--target <name>` selects by name.
 | `service_file` | no | Local path to systemd unit file; uploaded to /etc/systemd/system/<name>.service when changed |
 | `health` | no | Health-check command (crontab watchdog) |
 | `commands` | no | Override or extend manager commands (start, stop, restart, reload, deploy, status). Template vars: {name}, {binary}, {dir}, {service_file}. Action refs: {restart}, {reload}, etc. expand to the pre-override base command |
-| `restore` | no | Per-cue compensation on restore — restore: true re-deploys previous file state; restore: "cmd" or {shell, sudo} runs a command for action natures; restore: defer re-executes the cue shell after file restores; infers on_error: restore for the scenario |
-| `rollback_hint` | no | Hint shown by 'regis state hint' for this cue — e.g. DB migration reversal command. Supports {prev_sha} placeholder. |
+| `compensation` | no | Per-cue compensation on error — compensation: "cmd" runs a command; compensation: {shell, sudo} for sudo; compensation: defer re-runs the cue shell after all compensations; compensation: interactive drops to operator shell; file natures warn (no automated file restore — use regis state hint) |
+| `compensation_hint` | no | Hint shown by 'regis state hint' for this cue — e.g. DB migration reversal command. Supports {prev_sha} placeholder. |
 
 **Composite cue reference fields** (used instead of `name`/`nature`):
 
@@ -112,88 +112,87 @@ The `deploy:<name>` shorthand triggers `systemctl daemon-reload && systemctl ena
 | `max_failures` | int | — | Allowed target failures before halting |
 | `on_failure` | string | `halt` | Reaction when a target fails: halt | continue (default: halt) |
 | `success_when` | string | `auto` | How success is determined: auto | command | service | checks (default: auto) |
-| `on_error` | string | `halt` | Reaction on error: rollback | halt | continue (default: halt) |
+| `on_error` | string | `halt` | Reaction on error: compensate | halt | continue (default: halt) |
 
 `run.success_when: auto` resolves: checks exist → `checks`; service action ran → `service`; otherwise → `command`.
 
 ---
 
-### release
+### state
 
 | field | type | default | description |
 |-------|------|---------|-------------|
+| `enabled` | bool | `true` | Record deployment state after each deploy (default: true) |
+| `dir` | string | — | Remote directory for legacy file archives; default <target.dir>/.regis-states (rarely needed) |
+| `local_dir` | string | `.regis-states` | Local directory for state records (default: .regis-states) |
+| `keep` | int | `5` | State records to retain when --prune is used (default 5) |
 
-`release.enabled: true` (default) — assigns a state ID per deploy, archives files locally and remotely for rollback. Set to `false` for live deploys with no history.
+`state.enabled: true` (default) — assigns a state ID per deploy, archives files locally and remotely. Set to `false` for live deploys with no history.
 
 ---
 
-### Rollback
+### Compensation (on_error: compensate)
 
-When `on_error: restore` triggers (explicit or inferred from per-cue `rollback:` fields), a deploy failure runs rollback in four steps:
+When `on_error: compensate` triggers (explicit or inferred when any cue has `compensation:` set), a deploy failure runs compensation in three steps:
 
-1. Find the most recent local release snapshot (`.regis-releases/<prevID>/`).
-2. **Per-cue compensations** — execute in full **reverse execution order** for every cue where `rollback:` is enabled:
-   - File natures (binary/config/secret/render/pack): re-upload the previous snapshot's files for that cue to their recorded remote paths.
-   - Action natures: run the `rollback: "shell cmd"` command on the remote.
-3. If no per-cue `rollback:` was declared (legacy / explicit `on_error: restore`): re-upload **all** artifacts from the previous snapshot.
-4. **Scenario-level rollback block** — the `rollback:` cue list under each scenario runs in topo order.
+1. **Per-cue compensations** — execute in full **reverse execution order** for every cue where `compensation:` is enabled and has a shell:
+   - Action/service natures: run the `compensation: "shell cmd"` command on the remote.
+   - File natures (binary/config/secret/render/pack): no automated file restore — use `regis state hint` for guidance.
+2. **Deferred compensations** — cues with `compensation: defer` re-run their own `shell:` in forward order after all regular compensations complete.
+3. **Scenario-level compensate: block** — action cues listed under `compensate:` run in topo order. `$STATE_ID` is available.
 
-**Inferred `on_error: restore`**: if any direct cue in a scenario declares `rollback: true` or `rollback: "cmd"`, the runner automatically treats that scenario as `on_error: restore` — no explicit setting needed.
+**Inferred `on_error: compensate`**: if any direct cue in a scenario declares `compensation:`, the runner automatically treats that scenario as `on_error: compensate` — no explicit setting needed.
 
-**Per-cue rollback syntax** (on any cue in `cues:`):
+**Interactive prompt**: when running in a terminal, each step prompts the operator: `[enter] run   [s] open shell   [k] skip   [q] stop all`. In CI (no TTY), runs automatically.
+
+**Per-cue compensation syntax** (on any cue in `cues:`):
 
 ```yaml
-# File natures — restore from previous snapshot
-- name: frontend
-  nature: pack
-  src: dist/**
-  dest: ./
-  rollback: true          # restores all pack files from previous snapshot
-
 # Action natures — run a compensation command
 - name: go-offline
   shell: touch maintenance.flag
-  rollback: "rm -f maintenance.flag"   # undo: remove the flag
+  compensation: "rm -f maintenance.flag"   # undo: remove the flag
 
 # Or with sudo:
 - name: deploy-service
   shell: systemctl start myapp
-  rollback:
+  compensation:
     shell: systemctl stop myapp
     sudo: true
 
-# rollback: defer — re-run this cue's shell AFTER all per-cue file restores complete.
-# Use when the command must reconcile with restored files (e.g. dependency install).
+# compensation: defer — re-run this cue's shell AFTER all regular compensations complete.
 - name: install-deps
   shell: composer install
-  rollback: defer         # skipped in reverse phase; re-run after vendor/ is restored
+  compensation: defer
+
+# compensation: interactive — drop to operator shell instead of running a preset command.
+- name: migrate
+  shell: php artisan migrate
+  compensation: interactive
 ```
 
-`$RELEASE_ID` is injected into the env of every cue and every rollback action at deploy start, so pre-deploy backup labels and rollback restore labels match:
+`$STATE_ID` is injected into the env of every cue and every compensate action at deploy start, so pre-deploy backup labels and compensation restore labels match:
 
 ```yaml
 Deploy:
-  rollback:                      # scenario-level: runs after per-cue compensations
+  compensate:                    # scenario-level: runs after per-cue compensations
     - name: restore-db
-      shell: php artisan db:restore --label=pre-${RELEASE_ID}
+      shell: php artisan db:restore --label=pre-${STATE_ID}
   cues:
     - name: backup-db
-      shell: php artisan db:backup --label=pre-${RELEASE_ID}
-      # no rollback: — backup can't be undone, just skip
+      shell: php artisan db:backup --label=pre-${STATE_ID}
     - name: go-offline
       shell: touch maintenance.flag
-      rollback: "rm -f maintenance.flag"
-    - name: frontend
-      nature: pack
-      src: dist/**
-      dest: /var/www/
-      rollback: true               # file restore from previous snapshot
-    - name: go-online
-      shell: rm -f maintenance.flag
-      rollback: "touch maintenance.flag"   # reverse: put back into maintenance
+      compensation: "rm -f maintenance.flag"
+    - name: migrate
+      shell: php artisan migrate
+      compensation: "php artisan migrate:rollback"
+    - name: install-deps
+      shell: composer install
+      compensation: defer          # re-run after db is restored
 ```
 
-Rollback requires `release.enabled: true` (default) so a local snapshot exists. If no previous release is found, rollback runs compensations that have `shell:` but skips file restore. Pack snapshots are included automatically when `rollback: true` is set.
+File recovery (binary/config/pack/secret/render): re-deploy from the previous git ref — `regis state hint` shows the git worktree deploy command and any `compensation_hint:` entries.
 
 ---
 
@@ -203,7 +202,7 @@ Rollback requires `release.enabled: true` (default) so a local snapshot exists. 
 
 | Tier | Condition | Behaviour |
 |------|-----------|----------|
-| 1 | `.regis-pack-<name>` manifest in dest (or release archive) | Exact diff — only previously-managed files removed. Automatic. |
+| 1 | `.regis-pack-<name>` manifest in dest (or state archive) | Exact diff — only previously-managed files removed. Automatic. |
 | 2 | No manifest; flat src patterns (e.g. `*.html`) | Scope-filtered candidates shown with mtime; auto-prune with `-y`. |
 | 3 | No manifest; no flat patterns | Lists unmanaged files as informational; no deletion. |
 
@@ -217,27 +216,27 @@ The managed manifest (`.regis-pack-<name>`) is **always written** after a succes
 
 Runs a shell command. local: true runs on your machine; default runs on SSH target.
 Always executes (no change detection).
-restore: "cmd" or {shell, sudo} — runs a compensation command when on_error: restore triggers.
+compensation: "cmd" or {shell, sudo} — runs a compensation command when on_error: compensate triggers.
 
 ### binary
 
 Uploads a compiled executable. Change detection: mtime+size fast path, hash fallback.
 Atomic upload: copies to <dest>.new, then mv. Direction: local→remote.
-restore: true — re-deploy previous version from git at the recorded state ref.
+compensation: file state is not automatically restored — use `regis state hint` for recovery guidance.
 
 ### config
 
 Uploads a text file (nginx conf, YAML, etc.). Change detection via unified text diff shown in output.
 Local file content is rendered with target env vars (${VAR} substitution) before comparison.
 Direction: local→remote.
-restore: true — re-deploy previous version from git at the recorded state ref.
+compensation: file state is not automatically restored — use `regis state hint` for recovery guidance.
 
 ### generate
 
 Runs a shell command locally to produce artifacts (e.g. rendered config files).
 Always executes — even during rdiff — so downstream config cues compare fresh output.
 Reports = by default (no noise in rdiff output); use changed_when: true to mark as changed.
-restore: not applicable — generate cues run locally and produce no remote state to restore.
+compensation: not applicable — generate cues run locally and produce no remote state.
 
 ### pack
 
@@ -254,12 +253,11 @@ src: application/**  dest: /var/www/  →  application/img/logo.png  →  /var/w
 git: true            dest: /var/www/  →  cmd/main.go               →  /var/www/cmd/main.go
 Direction: local → remote. Always state-affecting.
 Prune strategy (three tiers, first match wins):
-Tier 1  — managed-file manifest (.regis-pack-<name> in dest or release archive): exact diff, automatic
+Tier 1  — managed-file manifest (.regis-pack-<name> in dest or state archive): exact diff, automatic
 Tier 2  — src-scope filter + mtime: shows candidates; auto-prunes with --yes
 Tier 3  — informational: lists unmanaged files, no deletion
 The managed manifest is always written after a successful deploy so tier 1 is ready on the next run.
-restore: true — re-deploy previous version from git at the recorded state ref. Pack files are
-automatically included in the snapshot when rollback: true is set.
+compensation: file state is not automatically restored — use `regis state hint` for recovery guidance.
 
 ### render
 
@@ -274,13 +272,13 @@ Change detection: text diff for UTF-8 content, MD5 for binary.
 prune: true (folder mode only) deletes remote files absent from the rendered output.
 Always runs — even during rdiff — so comparisons reflect freshly rendered content.
 Direction: local (rendered) → remote.
-restore: true — re-deploy previous version from git at the recorded state ref.
+compensation: file state is not automatically restored — use `regis state hint` for recovery guidance.
 
 ### secret
 
 Uploads an env file. Values are masked in all output. preserve: lists keys never overwritten.
 Direction: local→remote.
-restore: true — re-deploy previous version from git at the recorded state ref.
+compensation: file state is not automatically restored — use `regis state hint` for recovery guidance.
 
 ### service
 
@@ -294,7 +292,7 @@ the remote path. For systemd: /etc/systemd/system/<name>.service.
 StatusChanged when either check shows a difference.
 On real run: uploads the service file if changed, then queues a deploy:<name> post-action
 (systemctl daemon-reload + enable for systemd; crontab entry install for crontab).
-restore: "cmd" or {shell, sudo} — runs a compensation command when on_error: restore triggers.
+compensation: "cmd" or {shell, sudo} — runs a compensation command when on_error: compensate triggers.
 
 ---
 
@@ -313,9 +311,9 @@ ${TARGET_USER}  — SSH user
 ${TARGET_DIR}   — remote working directory (target.dir)
 ${TARGET_PORT}  — SSH port (only when explicitly set)
 Built-in runtime variable (injected into every cue env at deploy start):
-${RELEASE_ID}   — unique deploy ID; format vYYYYMMDD-HHMMSS, or vYYYYMMDD-HHMMSS+<tag> when
+${STATE_ID}     — unique deploy ID; format vYYYYMMDD-HHMMSS, or vYYYYMMDD-HHMMSS+<tag> when
 HEAD is on a git tag; consistent across all cues in a run; use in backup
-labels (backup --label=pre-${RELEASE_ID}) so rollback can find the right snapshot
+labels (backup --label=pre-${STATE_ID}) so compensation can find the right snapshot
 
 ---
 
@@ -328,7 +326,7 @@ labels (backup --label=pre-${RELEASE_ID}) so rollback can find the right snapsho
 
 `requires: [scenario-a, scenario-b]` declares prerequisites — scenarios that must complete before this one starts. Prerequisites are **deduplicated**: if multiple scenarios all require `build`, it runs exactly once. `needs:` is an accepted alias.
 
-Each scenario in `requires:` is **independent**: it runs as its own unit with its own `on_error` policy. A failure in a prerequisite does **not** trigger the dependent scenario's `on_error: restore`. Use inline scenario refs (`{ scenario: x }` in `cues:`) when you need the parent's `on_error` to cover the referenced scenario's cues.
+Each scenario in `requires:` is **independent**: it runs as its own unit with its own `on_error` policy. A failure in a prerequisite does **not** trigger the dependent scenario's `on_error: compensate`. Use inline scenario refs (`{ scenario: x }` in `cues:`) when you need the parent's `on_error` to cover the referenced scenario's cues.
 
 
 
@@ -394,22 +392,22 @@ Two mechanisms for scenario composition — choose consciously:
 |---|---|---|
 | Deduplication | yes — each scenario runs once even if required by many | no — expands at the call-site position each time |
 | Ordering | all prerequisites complete before parent starts | cues interleave at the exact position in the list |
-| `on_error` scope | each scenario is independent — parent's restore does not cover it | parent's `on_error` applies — a failure in an inlined cue triggers the composing scenario's rollback |
+| `on_error` scope | each scenario is independent — parent's compensate does not cover it | parent's `on_error` applies — a failure in an inlined cue triggers the composing scenario's compensation |
 | Use when | "these must finish first; they own their error handling" | "these cues are part of me; restore everything together" |
 
 ```yaml
 # requires: — files deploy independently, before deploy starts.
-# If app fails, app's on_error applies (default: halt). deploy's rollback never fires.
+# If app fails, app's on_error applies (default: halt). deploy's compensate never fires.
 deploy:
   requires: [app, config]
-  on_error: restore   # only covers deploy's own cues
+  on_error: compensate   # only covers deploy's own cues
   cues:
     - name: migrate ...
 
 # inline ref — files are part of deploy. If app's pack cue fails,
-# deploy's on_error: restore fires and rolls back everything.
+# deploy's on_error: compensate fires for everything.
 deploy:
-  on_error: restore
+  on_error: compensate
   cues:
     - { scenario: app }    # expanded inline; parent's on_error covers this
     - { scenario: config }
@@ -481,18 +479,18 @@ runs the normal deploy. Because every cue is `StatusChanged`, the manifest is wr
 hashes. Prompts for confirmation unless `--yes` is set. Backup path:
 `<parent_of_target_dir>/<basename>-bak-<timestamp>.tar.gz`.
 
-#### Release history after remediation
+#### State history after remediation
 
 All remediation paths (rebuild, force-manifest, fresh) generate a **new state ID** and append it
 to the archive — they do not rewrite history. After a rebuild following a partial deploy:
 
 ```
 v20260612-143022  ← rebuilt checkpoint (rollback target)
-v20260601-120000  ← partial/broken release (stays in history)
+v20260601-120000  ← partial/broken state (stays in history)
 ```
 
-`release rollback` with no args picks the entry before the latest, so it naturally lands on the
-rebuild checkpoint, skipping the broken release.
+`state hint` with no args picks the entry before the latest, so it naturally lands on the
+rebuild checkpoint, skipping the broken state.
 
 
 ---
@@ -505,8 +503,9 @@ rebuild checkpoint, skipping the broken release.
 |------|-------|-------------|
 | `--file` | `-f` | config file (default: regis.yml) |
 | `--target` | | target selector: name, comma-list, `all`, or glob |
-| `--dry-run` | `-n` | show what would happen without executing |
-| `--yes` | `-y` | skip confirmation prompts (CI mode) |
+| `--run-without-check` | | skip Phase 1 rdiff and deploy directly (CI/automation) |
+| `--allow-dirty` | | allow rdiff and deploy with uncommitted changes |
+| `--no-git` | | allow rdiff and deploy without a git repository |
 | `--verbose` | `-v` | show unchanged cues and full command output |
 | `--quiet` | `-q` | errors and summary only |
 | `--plain` | | force plain output (level 1) |
@@ -525,8 +524,7 @@ rebuild checkpoint, skipping the broken release.
 | `regis env` | show env files and variable sources for a target |
 | `regis exec "<command>"` | run a raw SSH command on the target (escape hatch) |
 | `regis fetch` | download remote artifacts to local source paths (or .regis/fetched/ with --archive) |
-| `regis hint [state-id]` | show rollback guidance for a state |
-| `regis rdiff [scenario-or-cue,...]` | show current sync state — are local cues in sync with remote? |
+| `regis hint [state-id]` | show recovery guidance for a state |
 | `regis run [scenario[,scenario...]]` | run one or more scenarios (omit to run all; also: regis <scenario> directly) |
 | `regis schema` | print the regis.yml schema reference |
 | `regis score [scenario,...]` | show scenario/cue structure and dependencies |

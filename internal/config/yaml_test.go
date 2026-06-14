@@ -261,103 +261,129 @@ scenarios: {}
 	}
 }
 
-// ── CueRestore.UnmarshalYAML ─────────────────────────────────────────────
+// ── CueCompensation.UnmarshalYAML ────────────────────────────────────────
 
-func TestCueRollback_boolTrue(t *testing.T) {
-	var got config.CueRestore
+func TestCueCompensation_boolTrue(t *testing.T) {
+	var got config.CueCompensation
 	if err := yaml.Unmarshal([]byte(`true`), &got); err != nil {
 		t.Fatal(err)
 	}
 	if !got.Enabled || got.Shell != "" || got.Sudo {
-		t.Errorf("restore: true — unexpected: %+v", got)
+		t.Errorf("compensation: true — unexpected: %+v", got)
 	}
 }
 
-func TestCueRollback_boolFalse(t *testing.T) {
-	var got config.CueRestore
+func TestCueCompensation_boolFalse(t *testing.T) {
+	var got config.CueCompensation
 	if err := yaml.Unmarshal([]byte(`false`), &got); err != nil {
 		t.Fatal(err)
 	}
 	if got.Enabled {
-		t.Errorf("restore: false — expected Enabled=false, got %+v", got)
+		t.Errorf("compensation: false — expected Enabled=false, got %+v", got)
 	}
 }
 
-func TestCueRollback_stringShell(t *testing.T) {
-	var got config.CueRestore
+func TestCueCompensation_stringShell(t *testing.T) {
+	var got config.CueCompensation
 	if err := yaml.Unmarshal([]byte(`"rm -f maintenance.flag"`), &got); err != nil {
 		t.Fatal(err)
 	}
 	if !got.Enabled || got.Shell != "rm -f maintenance.flag" || got.Sudo {
-		t.Errorf("rollback: string — unexpected: %+v", got)
+		t.Errorf("compensation: string — unexpected: %+v", got)
 	}
 }
 
-func TestCueRollback_objectForm(t *testing.T) {
-	var got config.CueRestore
+func TestCueCompensation_objectForm(t *testing.T) {
+	var got config.CueCompensation
 	if err := yaml.Unmarshal([]byte("shell: systemctl stop myapp\nsudo: true"), &got); err != nil {
 		t.Fatal(err)
 	}
 	if !got.Enabled || got.Shell != "systemctl stop myapp" || !got.Sudo {
-		t.Errorf("rollback: {shell, sudo} — unexpected: %+v", got)
+		t.Errorf("compensation: {shell, sudo} — unexpected: %+v", got)
 	}
 }
 
-func TestCueRef_rollbackParsedFromYAML(t *testing.T) {
+func TestCueRef_compensationParsedFromYAML(t *testing.T) {
 	const src = `
 name: go-offline
 nature: action
 shell: touch maintenance.flag
-restore: "rm -f maintenance.flag"
+compensation: "rm -f maintenance.flag"
 `
 	var got config.CueRef
 	if err := yaml.Unmarshal([]byte(src), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Restore == nil || !got.Restore.Enabled || got.Restore.Shell != "rm -f maintenance.flag" {
-		t.Errorf("CueRef.Restore not parsed: %+v", got.Restore)
+	if got.Compensation == nil || !got.Compensation.Enabled || got.Compensation.Shell != "rm -f maintenance.flag" {
+		t.Errorf("CueRef.Compensation not parsed: %+v", got.Compensation)
 	}
 }
 
-func TestCueRollback_defer(t *testing.T) {
-	var got config.CueRestore
+func TestCueCompensation_defer(t *testing.T) {
+	var got config.CueCompensation
 	if err := yaml.Unmarshal([]byte(`defer`), &got); err != nil {
 		t.Fatal(err)
 	}
 	if !got.Enabled || !got.Defer || got.Shell != "" || got.Sudo {
-		t.Errorf("restore: defer — unexpected: %+v", got)
+		t.Errorf("compensation: defer — unexpected: %+v", got)
 	}
 }
 
-func TestCueRef_rollbackDeferParsedFromYAML(t *testing.T) {
+func TestCueCompensation_interactive(t *testing.T) {
+	var got config.CueCompensation
+	if err := yaml.Unmarshal([]byte(`interactive`), &got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Enabled || !got.Interactive || got.Shell != "" || got.Defer {
+		t.Errorf("compensation: interactive — unexpected: %+v", got)
+	}
+}
+
+func TestCueRef_compensationDeferParsedFromYAML(t *testing.T) {
 	const src = `
 name: install-deps
 nature: action
 shell: composer install
-restore: defer
+compensation: defer
 `
 	var got config.CueRef
 	if err := yaml.Unmarshal([]byte(src), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Restore == nil || !got.Restore.Enabled || !got.Restore.Defer {
-		t.Errorf("CueRef.Restore (defer form) not parsed: %+v", got.Restore)
+	if got.Compensation == nil || !got.Compensation.Enabled || !got.Compensation.Defer {
+		t.Errorf("CueRef.Compensation (defer form) not parsed: %+v", got.Compensation)
 	}
 }
 
-func TestCueRef_rollbackTrueForFileNature(t *testing.T) {
+func TestCueRef_compensationTrueForFileNature(t *testing.T) {
 	const src = `
 name: frontend
 nature: pack
 src: dist/**
 dest: /var/www/
-restore: true
+compensation: true
 `
 	var got config.CueRef
 	if err := yaml.Unmarshal([]byte(src), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Restore == nil || !got.Restore.Enabled || got.Restore.Shell != "" {
-		t.Errorf("CueRef.Restore (true form) not parsed: %+v", got.Restore)
+	if got.Compensation == nil || !got.Compensation.Enabled || got.Compensation.Shell != "" {
+		t.Errorf("CueRef.Compensation (true form) not parsed: %+v", got.Compensation)
+	}
+}
+
+func TestCueRef_compensationHintParsedFromYAML(t *testing.T) {
+	const src = `
+name: migrate
+nature: action
+shell: php artisan migrate
+compensation_hint: "php artisan migrate:rollback (sha: {prev_sha_short})"
+`
+	var got config.CueRef
+	if err := yaml.Unmarshal([]byte(src), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.CompensationHint == "" {
+		t.Errorf("CueRef.CompensationHint not parsed, got empty")
 	}
 }

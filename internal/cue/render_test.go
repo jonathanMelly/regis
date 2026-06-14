@@ -184,7 +184,7 @@ func TestRenderExecutor_single_post_action(t *testing.T) {
 	}
 }
 
-func TestRenderExecutor_nature_and_release_affecting(t *testing.T) {
+func TestRenderExecutor_nature_and_state_affecting(t *testing.T) {
 	mock := &mockRenderConn{remoteFiles: map[string][]byte{"/opt/app/f": []byte("old")}}
 	ex := cue.NewRenderExecutor(mock)
 	shell, ld := singleFileFixture(t, "new")
@@ -194,7 +194,7 @@ func TestRenderExecutor_nature_and_release_affecting(t *testing.T) {
 		t.Errorf("want Nature=render, got %q", r.Nature)
 	}
 	if r.Status == cue.StatusChanged && !r.IsStateAffecting() {
-		t.Error("changed render cue must be release-affecting")
+		t.Error("changed render cue must be state-affecting")
 	}
 }
 

@@ -2,7 +2,7 @@
 // doc:nature action
 // Runs a shell command. local: true runs on your machine; default runs on SSH target.
 // Always executes (no change detection).
-// restore: "cmd" or {shell, sudo} — runs a compensation command when on_error: restore triggers.
+// compensation: "cmd" or {shell, sudo} — runs a compensation command when on_error: compensate triggers.
 package cue
 
 import (

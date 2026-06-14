@@ -45,7 +45,7 @@ type RunConfig struct {
 	MaxFailures int    `yaml:"max_failures"` // doc: Allowed target failures before halting
 	OnFailure   string `yaml:"on_failure"`   // doc: Reaction when a target fails: halt | continue (default: halt)
 	SuccessWhen string `yaml:"success_when"` // doc: How success is determined: auto | command | service | checks (default: auto)
-	OnError     string `yaml:"on_error"`     // doc: Reaction on error: rollback | halt | continue (default: halt)
+	OnError     string `yaml:"on_error"`     // doc: Reaction on error: compensate | halt | continue (default: halt)
 }
 
 type StateConfig struct {
@@ -95,32 +95,38 @@ type WhenExpr struct {
 // Scenario is a named deployment unit.
 // Custom UnmarshalYAML handles the requires/needs alias.
 type Scenario struct {
-	Describe    string            // doc: Human-readable label shown in output
-	Env         map[string]string // doc: Env vars for all cues in this scenario; overrides defaults.env, overridden by cue-level env
-	Post         PostAction        // doc: Remote command (or restart:/reload: shorthand) run once if any remote cue changed
-	Requires     StringOrList      // doc: Scenario names that must complete first (alias: needs) — deduplicated
-	RollbackHint string            // doc: Hint shown by 'regis state hint' — describes how to roll back this scenario. Supports {prev_sha} placeholder.
-	Cues         []CueRef          // doc: Ordered list of cues or scenario references
-	Checks      []CueRef          // doc: Terminal acceptance phase — read-only probes, run after cues complete
-	Restore     []CueRef          // doc: Actions run on the remote after file-snapshot restore when on_error: restore triggers; ${DEPLOY_ID} is available
-	SuccessWhen string            // doc: Override for run.success_when: auto | command | service | checks
-	OnError     string            // doc: Override for run.on_error: restore | halt | continue (default: halt)
-	SourceFile  string            // which file this came from (set during load)
+	Describe         string            // doc: Human-readable label shown in output
+	Env              map[string]string // doc: Env vars for all cues in this scenario; overrides defaults.env, overridden by cue-level env
+	Post             PostAction        // doc: Remote command (or restart:/reload: shorthand) run once if any remote cue changed
+	Requires         StringOrList      // doc: Scenario names that must complete first (alias: needs) — deduplicated
+	CompensationHint string            // doc: Hint shown by 'regis state hint' — describes how to roll back this scenario. Supports {prev_sha} placeholder.
+	Cues             []CueRef          // doc: Ordered list of cues or scenario references
+	Checks           []CueRef          // doc: Terminal acceptance phase — read-only probes, run after cues complete
+	Compensate       []CueRef          // doc: Actions run on the remote when on_error: compensate triggers; ${STATE_ID} is available
+	SuccessWhen      string            // doc: Override for run.success_when: auto | command | service | checks
+	OnError          string            // doc: Override for run.on_error: compensate | halt | continue (default: halt)
+	SourceFile       string            // which file this came from (set during load)
 }
 
-// CueRestore declares the compensation to execute when on_error: restore triggers
-// and this cue had already executed.
-// File natures (binary/config/secret/render/pack): restore: true re-deploys the
-// previous state from the local snapshot.
-// Action natures: restore: "shell cmd" or {shell, sudo} runs a compensation command.
-// restore: defer skips the reverse-order compensation phase and re-executes the
-// cue's shell command after all per-cue file restores complete.
+// CueCompensation declares what to do when this cue has already executed and a later
+// cue fails (on_error: compensate). Having any compensation: field infers on_error: compensate
+// for the scenario.
+//
+// Action/service natures: compensation: "shell cmd" or {shell, sudo} runs a compensation command
+// in reverse execution order. compensation: defer skips the reverse phase and re-runs the cue's
+// own shell after all regular compensations complete.
+// compensation: interactive drops to an operator shell instead of running a preset command.
+//
+// File natures (binary/config/secret/render/pack): a compensation shell is allowed but warns at
+// validate time — file state is not automatically restored; use `regis state hint` for guidance.
+//
 // Custom UnmarshalYAML handles the polymorphic forms.
-type CueRestore struct {
-	Enabled bool   // true = restore active for this cue
-	Shell   string // compensation shell command (action natures only)
-	Sudo    bool   // run compensation with sudo
-	Defer   bool   // skip reverse compensation; re-run cue shell after file restores
+type CueCompensation struct {
+	Enabled     bool   // true = compensation active for this cue
+	Shell       string // compensation shell command
+	Sudo        bool   // run compensation with sudo
+	Defer       bool   // skip reverse compensation; re-run cue shell after all regular compensations complete
+	Interactive bool   // drop to operator shell instead of running a preset command
 }
 
 // CueRef is one entry in a cue list — either an inline cue or a scenario reference.
@@ -144,7 +150,7 @@ type CueRef struct {
 	Preserve        StringOrList      // doc: Remote keys never overwritten during merge (secret only)
 	Mode            string            // doc: Remote file permissions, e.g. "600"
 	If              string            // doc: Boolean rule or probe — skip cue when false
-	AffectsState  bool              // doc: Mark remote action cue as release-affecting (default false for actions)
+	AffectsState    bool              // doc: Mark remote action cue as state-affecting so it is recorded in the deploy state (default false for actions)
 	ChangedWhen     WhenExpr          // doc: Override change detection — defaults: binary/config/secret/render=MD5 diff, action=always changed, generate=always equal; expressions: "stdout contains X", "stdout !contains X", "stderr contains X", "exit == N", "exit != N"; or changed_when: true to force
 	FailedWhen      WhenExpr          // doc: Override failure detection — defaults: action/generate=exit != 0, binary/config/secret=upload error; expressions: "exit != 0", "stdout contains ERROR", "stderr !contains OK"
 	ContinueOnError bool              // doc: true = cue failure does not halt deployment (default false)
@@ -160,6 +166,7 @@ type CueRef struct {
 	ServiceFile string            // doc: Local path to systemd unit file; uploaded to /etc/systemd/system/<name>.service when changed
 	Health      string            // doc: Health-check command (crontab watchdog)
 	Commands    map[string]string // doc: Override or extend manager commands (start, stop, restart, reload, deploy, status). Template vars: {name}, {binary}, {dir}, {service_file}. Action refs: {restart}, {reload}, etc. expand to the pre-override base command
-	Restore      *CueRestore       // doc: Per-cue compensation on restore — restore: true re-deploys previous file state; restore: "cmd" or {shell, sudo} runs a command for action natures; restore: defer re-executes the cue shell after file restores; infers on_error: restore for the scenario
-	RollbackHint string            // doc: Hint shown by 'regis state hint' for this cue — e.g. DB migration reversal command. Supports {prev_sha} placeholder.
+
+	Compensation     *CueCompensation  // doc: Per-cue compensation on error — compensation: "cmd" runs a command; compensation: {shell, sudo} for sudo; compensation: defer re-runs the cue shell after all compensations; compensation: interactive drops to operator shell; file natures warn (no automated file restore — use regis state hint)
+	CompensationHint string            // doc: Hint shown by 'regis state hint' for this cue — e.g. DB migration reversal command. Supports {prev_sha} placeholder.
 }
