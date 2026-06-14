@@ -32,6 +32,7 @@ func (e *GenerateExecutor) Execute(ctx context.Context, _ SSHConn, cr config.Cue
 		CueName: cr.Name,
 		Nature:  "generate",
 		IsLocal: true,
+		Cmd:     cr.Shell,
 	}
 
 	stdout, stderr, exitCode, runErr := runLocal(ctx, cr.Shell, cr.Env)

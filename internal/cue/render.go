@@ -40,6 +40,7 @@ func (e *RenderExecutor) Execute(ctx context.Context, conn SSHConn, cr config.Cu
 		CueName:        cr.Name,
 		Nature:         "render",
 		AffectsState: true,
+		Cmd:            cr.Shell,
 	}
 
 	isFolder := strings.HasSuffix(cr.Dest, "/")
