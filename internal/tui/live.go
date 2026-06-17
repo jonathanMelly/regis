@@ -151,6 +151,8 @@ type phaseModel struct {
 	nextPhaseLabel string
 	hideSkipped    bool
 
+	gitSHA string // short hash shown in check phase title
+
 	// live phase
 	checking    bool
 	liveEntries []liveEntry
@@ -272,7 +274,11 @@ func (m phaseModel) titleLine() string {
 	if ts.IsZero() {
 		ts = time.Now()
 	}
-	return fmt.Sprintf("%-5s  %s   %s", m.phaseLabel, m.target, ts.Format("02.01.2006 15:04:05"))
+	line := fmt.Sprintf("%-5s  %s   %s", m.phaseLabel, m.target, ts.Format("02.01.2006 15:04:05"))
+	if m.phaseLabel == "check" && m.gitSHA != "" {
+		line += "   " + m.gitSHA
+	}
+	return line
 }
 
 func liveSymbol(r cue.Result, spinFrame int, done bool) string {
@@ -1195,6 +1201,7 @@ func RunLiveTUI(
 	verbose bool,
 	level output.Level,
 	minfo *output.ManifestInfo,
+	gitSHA string,
 	phase1 PhaseFunc,
 	phase2 *PhaseFunc,
 	compensate bool,
@@ -1212,6 +1219,7 @@ func RunLiveTUI(
 		target:             target,
 		verbose:            verbose,
 		minfo:              minfo,
+		gitSHA:             gitSHA,
 		phaseLabel:         phase1.Label,
 		nextPhaseLabel:     nextLabel,
 		width:              80,

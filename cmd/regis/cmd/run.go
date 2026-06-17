@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"strings"
@@ -367,6 +368,11 @@ func newRunCommand(gf *GlobalFlags) *cobra.Command {
 					hasPhase2 = true
 				}
 
+				gitSHA := ""
+				if !gf.RunWithoutCheck {
+					gitSHA = gitShortSHA()
+				}
+
 				// Level2: TUI.
 				if level >= output.Level2 {
 					spinner.Stop()
@@ -374,7 +380,7 @@ func newRunCommand(gf *GlobalFlags) *cobra.Command {
 					if hasPhase2 {
 						p2 = &phase2
 					}
-					tuiErr := tui.RunLiveTUI(baseCtx, tgtName, gf.Verbose, level, minfo, phase1, p2, compensateEnabled)
+					tuiErr := tui.RunLiveTUI(baseCtx, tgtName, gf.Verbose, level, minfo, gitSHA, phase1, p2, compensateEnabled)
 					if rawConn != nil {
 						rawConn.Close()
 					}
@@ -393,6 +399,9 @@ func newRunCommand(gf *GlobalFlags) *cobra.Command {
 					}
 					fmt.Fprintf(os.Stderr, "FAILED  %s: %v\n", tgtName, runErr)
 					os.Exit(1)
+				}
+				if hasPhase2 && gitSHA != "" {
+					fmt.Printf("check  %s   %s\n", tgtName, gitSHA)
 				}
 				fmt.Print(output.RenderTree(results, tgtName, elapsed, true, gf.Verbose, level, minfo))
 				if hasPhase2 {
@@ -436,6 +445,14 @@ func newRunCommand(gf *GlobalFlags) *cobra.Command {
 	c.Flags().BoolVar(&forceCompensate, "compensate", false, "on error: run compensation actions (overrides per-scenario policy)")
 	c.Flags().BoolVar(&noCompensate, "no-compensate", false, "on error: halt (overrides per-scenario compensate)")
 	return c
+}
+
+func gitShortSHA() string {
+	out, err := exec.Command("git", "rev-parse", "--short", "HEAD").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func scenarioSuggestions(name string, candidates []string) []string {
