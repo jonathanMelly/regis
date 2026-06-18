@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -278,7 +279,7 @@ func cardMeta(it menuItem) string {
 }
 
 func padRight(s string, width int) string {
-	n := len(s)
+	n := utf8.RuneCountInString(s)
 	if n >= width {
 		return s
 	}
@@ -286,11 +287,12 @@ func padRight(s string, width int) string {
 }
 
 func truncate(s string, width int) string {
-	if len(s) <= width {
+	runes := []rune(s)
+	if len(runes) <= width {
 		return s
 	}
 	if width > 3 {
-		return s[:width-3] + "..."
+		return string(runes[:width-3]) + "..."
 	}
-	return s[:width]
+	return string(runes[:width])
 }
