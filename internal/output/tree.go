@@ -54,10 +54,9 @@ func RenderTree(results []cue.Result, target string, total time.Duration,
 		minfo = manifest[0]
 	}
 
-	// Group results by top-level scenario in first-seen order.
-	// GroupScenarioName (set by the runner) is the display owner — for ref-expanded cues
-	// this is the top-level caller, not the referenced sub-scenario, so they all appear
-	// together under one heading instead of fragmenting into per-sub-scenario sections.
+	// Group results by scenario name in first-seen order.
+	// Ref-expanded cues (e.g. Deploy → Saver/Dashboard/…) use ScenarioName so each
+	// sub-scenario gets its own heading instead of everything collapsing into one flat group.
 	type group struct {
 		label string
 		rows  []cue.Result
@@ -65,14 +64,8 @@ func RenderTree(results []cue.Result, target string, total time.Duration,
 	var groups []group
 	groupIdx := map[string]int{}
 	for _, r := range results {
-		key := r.GroupScenarioName
-		if key == "" {
-			key = r.ScenarioName
-		}
-		label := r.GroupScenarioDesc
-		if label == "" {
-			label = r.ScenarioDesc
-		}
+		key := r.ScenarioName
+		label := r.ScenarioDesc
 		if label == "" {
 			label = key
 		}

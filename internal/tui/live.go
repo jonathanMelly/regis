@@ -325,14 +325,8 @@ func (m phaseModel) viewLive() string {
 	var groups []liveGroup
 	groupIdx := map[string]int{}
 	for i, e := range m.liveEntries {
-		key := e.info.GroupScenarioName
-		if key == "" {
-			key = e.info.ScenarioName
-		}
-		label := e.info.GroupScenarioDesc
-		if label == "" {
-			label = e.info.ScenarioDesc
-		}
+		key := e.info.ScenarioName
+		label := e.info.ScenarioDesc
 		if label == "" {
 			label = key
 		}
@@ -603,14 +597,8 @@ func newPhaseModel(
 	var groups []groupEntry
 	groupIdx := map[string]int{}
 	for _, r := range results {
-		key := r.GroupScenarioName
-		if key == "" {
-			key = r.ScenarioName
-		}
-		label := r.GroupScenarioDesc
-		if label == "" {
-			label = r.ScenarioDesc
-		}
+		key := r.ScenarioName
+		label := r.ScenarioDesc
 		if label == "" {
 			label = key
 		}
