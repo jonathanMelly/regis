@@ -97,6 +97,7 @@ scenarios:
       - name: nginx-front
         manager: systemd
         sudo: true
+        service_name: nginx-front
         commands:
           reload: nginx -t && {reload}
 `)

@@ -273,6 +273,7 @@ func (c *CueRef) UnmarshalYAML(value *yaml.Node) error {
 		Manager         string            `yaml:"manager"`
 		Binary          string            `yaml:"binary"`
 		ServiceFile     string            `yaml:"service_file"`
+		ServiceName     string            `yaml:"service_name"`
 		Health          string            `yaml:"health"`
 		Commands         map[string]string  `yaml:"commands"`
 		Compensation     *CueCompensation   `yaml:"compensation"`
@@ -314,6 +315,7 @@ func (c *CueRef) UnmarshalYAML(value *yaml.Node) error {
 	c.Manager = p.Manager
 	c.Binary = p.Binary
 	c.ServiceFile = p.ServiceFile
+	c.ServiceName = p.ServiceName
 	c.Health = p.Health
 	c.Commands = p.Commands
 	c.Compensation = p.Compensation

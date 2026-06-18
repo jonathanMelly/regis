@@ -20,6 +20,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"git.disroot.org/jmy/regis/internal/config"
@@ -42,10 +44,30 @@ func NewServiceExecutor(conn SSHConn, env ...map[string]string) *ServiceExecutor
 	return e
 }
 
+// serviceName returns the logical service name used for systemd/crontab operations.
+//  1. service_file basename without extension — source of truth when a unit file is declared.
+//  2. service_name — explicit identifier for system-managed services (e.g. nginx).
+//  3. cr.Binary — crontab binary name.
+//  4. cr.Name — last resort (works when cue name matches the service, e.g. name: nginx-front).
+func serviceName(cr config.CueRef) string {
+	if cr.ServiceFile != "" {
+		base := filepath.Base(cr.ServiceFile)
+		return strings.TrimSuffix(base, filepath.Ext(base))
+	}
+	if cr.ServiceName != "" {
+		return cr.ServiceName
+	}
+	if cr.Binary != "" {
+		return cr.Binary
+	}
+	return cr.Name
+}
+
 // Execute checks service file diff and enabled state, uploads if needed, queues deploy post-action.
 func (e *ServiceExecutor) Execute(ctx context.Context, _ SSHConn, cr config.CueRef, target config.Target) (Result, error) {
 	start := time.Now()
-	r := Result{CueName: cr.Name, Nature: "service", AffectsState: false, Cmd: fmt.Sprintf("/etc/systemd/system/%s.service", cr.Name)}
+	svcName := serviceName(cr)
+	r := Result{CueName: cr.Name, Nature: "service", AffectsState: false, Cmd: fmt.Sprintf("/etc/systemd/system/%s.service", svcName)}
 
 	// Check 1: service unit file diff (systemd, when service_file is set)
 	fileChanged, diff, rendered, err := e.checkServiceFile(cr, target)
@@ -74,7 +96,7 @@ func (e *ServiceExecutor) Execute(ctx context.Context, _ SSHConn, cr config.CueR
 
 	// Upload service file if it changed (upload rendered content with __REMOTE_DIR__ expanded)
 	if fileChanged {
-		remotePath := fmt.Sprintf("/etc/systemd/system/%s.service", cr.Name)
+		remotePath := fmt.Sprintf("/etc/systemd/system/%s.service", svcName)
 		useSudo := cr.Sudo || target.Sudo
 		if err := e.conn.UploadBytes(rendered, remotePath, 0644, useSudo); err != nil {
 			r.Status = StatusFailed
@@ -89,7 +111,7 @@ func (e *ServiceExecutor) Execute(ctx context.Context, _ SSHConn, cr config.CueR
 	}
 
 	// Queue deploy:<name> post-action (daemon-reload+enable for systemd; crontab install for crontab)
-	r.PostActions = []PostAction{{Cmd: "deploy:" + cr.Name, Sudo: cr.Sudo || target.Sudo}}
+	r.PostActions = []PostAction{{Cmd: "deploy:" + svcName, Sudo: cr.Sudo || target.Sudo}}
 	r.Status = StatusChanged
 	r.Elapsed = time.Since(start)
 	return r, nil
@@ -107,7 +129,7 @@ func (e *ServiceExecutor) checkServiceFile(cr config.CueRef, tgt config.Target) 
 		return false, "", nil, fmt.Errorf("read %s: %w", cr.ServiceFile, err)
 	}
 	expanded := config.InterpolateString(string(localData), e.env)
-	remotePath := fmt.Sprintf("/etc/systemd/system/%s.service", cr.Name)
+	remotePath := fmt.Sprintf("/etc/systemd/system/%s.service", serviceName(cr))
 	remoteData, _ := e.conn.Download(remotePath)
 	diffStr, isChanged := TextDiff(expanded, string(remoteData),
 		"remote: "+remotePath,
@@ -121,7 +143,7 @@ func (e *ServiceExecutor) checkServiceFile(cr config.CueRef, tgt config.Target) 
 func (e *ServiceExecutor) checkEnabled(cr config.CueRef, tgt config.Target) bool {
 	switch cr.Manager {
 	case "systemd":
-		_, _, code, err := e.conn.Run(fmt.Sprintf("systemctl is-enabled %s 2>/dev/null", cr.Name))
+		_, _, code, err := e.conn.Run(fmt.Sprintf("systemctl is-enabled %s 2>/dev/null", serviceName(cr)))
 		return err == nil && code == 0
 
 	case "crontab":

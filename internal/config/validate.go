@@ -1,7 +1,10 @@
 // internal/config/validate.go
 package config
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // KnownNatures is the single authoritative set of valid cue natures.
 // Add an entry here when implementing a new executor.
@@ -58,7 +61,9 @@ func Validate(c *Config) []error {
 			}
 		}
 		updated := sc
+		scNameLower := strings.ToLower(scName)
 		for i, cr := range sc.Cues {
+			updated.Cues[i].ScenarioName = scNameLower
 			if cr.ScenarioRef != "" {
 				if _, ok := c.Scenarios[cr.ScenarioRef]; !ok {
 					add("scenario %q: cue references undefined scenario %q", scName, cr.ScenarioRef)
@@ -82,6 +87,10 @@ func Validate(c *Config) []error {
 				continue
 			}
 			updated.Cues[i].Nature = nature
+
+			if nature == "service" && cr.Manager == "systemd" && cr.ServiceFile == "" && cr.ServiceName == "" {
+				add("scenario %q cue %q: systemd service requires service_file: or service_name:", scName, cr.Name)
+			}
 
 			if cr.Git {
 				if len(cr.Src) > 0 {

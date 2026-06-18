@@ -134,6 +134,7 @@ type CueCompensation struct {
 type CueRef struct {
 	// Scenario reference fields
 	ScenarioRef string       // yaml:"scenario"
+	ScenarioName string      // set during validation — lowercase scenario name, used as service name fallback
 	NarrowCue   string       // yaml:"cue" — narrow to one cue within a scenario reference
 	CueNames    StringOrList // yaml:"cues" — narrow to subset
 
@@ -162,8 +163,9 @@ type CueRef struct {
 
 	// Service cue fields (nature: service — inferred when Manager is set)
 	Manager     string            // doc: systemd | crontab (built-in), or any custom string (e.g. pm2); presence infers nature: service
-	Binary      string            // doc: Binary filename relative to target.dir (service, crontab)
-	ServiceFile string            // doc: Local path to systemd unit file; uploaded to /etc/systemd/system/<name>.service when changed
+	Binary      string            // doc: Binary filename relative to target.dir (crontab); required for crontab services
+	ServiceFile string            // doc: Local path to systemd unit file; uploaded to /etc/systemd/system/<basename>.service when changed; basename without extension is used as service name
+	ServiceName string            // doc: Explicit systemd service unit name (e.g. nginx) — required when service_file is absent; used for systemctl is-enabled / deploy post-action
 	Health      string            // doc: Health-check command (crontab watchdog)
 	Commands    map[string]string // doc: Override or extend manager commands (start, stop, restart, reload, deploy, status). Template vars: {name}, {binary}, {dir}, {service_file}. Action refs: {restart}, {reload}, etc. expand to the pre-override base command
 
