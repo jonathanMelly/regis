@@ -7,7 +7,10 @@ import (
 )
 
 func systemdDefaults(cr config.CueRef) map[string]string {
-	name := cr.Name
+	name := config.ServiceID(cr)
+	if name == "" {
+		name = cr.Name
+	}
 	return map[string]string{
 		"deploy":  fmt.Sprintf("systemctl daemon-reload && systemctl enable %s", name),
 		"enable":  fmt.Sprintf("systemctl enable %s", name),

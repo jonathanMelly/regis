@@ -9,10 +9,10 @@ import (
 
 func TestSystemdCommands_defaults(t *testing.T) {
 	cr := config.CueRef{
-		Name:    "mailway",
-		Nature:  "service",
-		Manager: "systemd",
-		Binary:  "mailway",
+		Name:        "service",
+		Nature:      "service",
+		Manager:     "systemd",
+		ServiceName: "mailway",
 	}
 	tgt := config.Target{Dir: "/opt/app"}
 	cmds := manager.ExpandCommands(cr, tgt)
@@ -74,10 +74,10 @@ func TestCustomManager_requiresCommands(t *testing.T) {
 
 func TestTemplateVars(t *testing.T) {
 	cr := config.CueRef{
-		Name:    "saver",
-		Nature:  "service",
-		Manager: "systemd",
-		Binary:  "saver",
+		Name:        "service",
+		Nature:      "service",
+		Manager:     "systemd",
+		ServiceName: "saver",
 	}
 	tgt := config.Target{Dir: "/opt/app"}
 	cmd := manager.ExpandTemplate("systemctl start {name}", cr, tgt, nil)
@@ -88,9 +88,10 @@ func TestTemplateVars(t *testing.T) {
 
 func TestTemplateVars_superCall(t *testing.T) {
 	cr := config.CueRef{
-		Name:    "nginx-front",
-		Nature:  "service",
-		Manager: "systemd",
+		Name:        "service",
+		Nature:      "service",
+		Manager:     "systemd",
+		ServiceName: "nginx-front",
 		Commands: map[string]string{
 			"reload": "nginx -t && {reload}",
 		},

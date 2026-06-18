@@ -32,8 +32,12 @@ func ExpandCommands(cr config.CueRef, tgt config.Target) map[string]string {
 // expands to the corresponding entry in baseCmds (the pre-override base
 // commands), allowing overrides to "call super": e.g. "nginx -t && {reload}".
 func ExpandTemplate(template string, cr config.CueRef, tgt config.Target, baseCmds map[string]string) string {
+	name := config.ServiceID(cr)
+	if name == "" {
+		name = cr.Name
+	}
 	pairs := []string{
-		"{name}", cr.Name,
+		"{name}", name,
 		"{binary}", cr.Binary,
 		"{dir}", tgt.Dir,
 		"{service_file}", cr.ServiceFile,

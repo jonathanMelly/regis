@@ -3,8 +3,25 @@ package config
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 )
+
+// ServiceID returns the canonical identifier for a service cue —
+// binary (crontab), service_name, or service_file basename without .service extension.
+// Returns "" when the cue has no service identifier.
+func ServiceID(cr CueRef) string {
+	if cr.ServiceName != "" {
+		return cr.ServiceName
+	}
+	if cr.ServiceFile != "" {
+		return strings.TrimSuffix(filepath.Base(cr.ServiceFile), ".service")
+	}
+	if cr.Binary != "" {
+		return cr.Binary
+	}
+	return ""
+}
 
 // KnownNatures is the single authoritative set of valid cue natures.
 // Add an entry here when implementing a new executor.
@@ -91,6 +108,9 @@ func Validate(c *Config) []error {
 			if nature == "service" && cr.Manager == "systemd" && cr.ServiceFile == "" && cr.ServiceName == "" {
 				add("scenario %q cue %q: systemd service requires service_file: or service_name:", scName, cr.Name)
 			}
+			if nature == "service" && cr.Manager == "crontab" && cr.Binary == "" {
+				add("scenario %q cue %q: crontab service requires binary:", scName, cr.Name)
+			}
 
 			if cr.Git {
 				if len(cr.Src) > 0 {
@@ -121,6 +141,44 @@ func Validate(c *Config) []error {
 		}
 		c.Scenarios[scName] = updated
 	}
+
+	// Collect all service IDs (after natures have been inferred above).
+	svcIDs := map[string]bool{}
+	for _, sc := range c.Scenarios {
+		for _, cr := range sc.Cues {
+			if cr.Nature == "service" {
+				if id := ServiceID(cr); id != "" {
+					svcIDs[id] = true
+				}
+			}
+		}
+	}
+
+	// Validate post: shorthand references.
+	checkPostRef := func(pa PostAction, ctx string) {
+		for _, prefix := range []string{"restart:", "reload:", "deploy:"} {
+			if strings.HasPrefix(pa.Cmd, prefix) {
+				svcName := strings.TrimPrefix(pa.Cmd, prefix)
+				if !svcIDs[svcName] {
+					add("%s: %q references unknown service — use the binary: or service_name: value of a service cue", ctx, pa.Cmd)
+				}
+			}
+		}
+	}
+	for scName, sc := range c.Scenarios {
+		if sc.Post.Cmd != "" {
+			checkPostRef(sc.Post, fmt.Sprintf("scenario %q post", scName))
+		}
+		for _, cr := range sc.Cues {
+			if cr.ScenarioRef != "" {
+				continue
+			}
+			if cr.Post.Cmd != "" {
+				checkPostRef(cr.Post, fmt.Sprintf("scenario %q cue %q post", scName, cr.Name))
+			}
+		}
+	}
+
 	return errs
 }
 

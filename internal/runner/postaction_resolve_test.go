@@ -8,12 +8,18 @@ import (
 	"git.disroot.org/jmy/regis/internal/cue"
 )
 
-func cfg1svc(name, mgr string, sudo bool, commands map[string]string) *config.Config {
+// cfg1svc builds a minimal config with one service cue.
+// svcID is the service identifier — set as Binary for crontab, ServiceName otherwise.
+func cfg1svc(svcID, mgr string, sudo bool, commands map[string]string) *config.Config {
+	cr := config.CueRef{Name: "service", Nature: "service", Manager: mgr, Sudo: sudo, Commands: commands}
+	if mgr == "crontab" {
+		cr.Binary = svcID
+	} else {
+		cr.ServiceName = svcID
+	}
 	return &config.Config{
 		Scenarios: map[string]config.Scenario{
-			"svc": {Cues: []config.CueRef{
-				{Name: name, Nature: "service", Manager: mgr, Sudo: sudo, Commands: commands},
-			}},
+			"svc": {Cues: []config.CueRef{cr}},
 		},
 	}
 }
