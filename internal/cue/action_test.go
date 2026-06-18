@@ -4,6 +4,7 @@ package cue_test
 import (
 	"context"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -209,7 +210,13 @@ func TestActionExecutor_remote_no_dir_no_cd_prefix(t *testing.T) {
 func TestActionExecutor_local_uses_local_dir(t *testing.T) {
 	dir := t.TempDir()
 	ex := cue.NewActionExecutor(nil)
-	cr := config.CueRef{Name: "pwd-check", Nature: "action", Shell: "pwd", Local: true}
+	// On Windows cmd.exe "cd" (no args) prints the CWD as a Windows path.
+	// On Unix "pwd" prints the CWD; EvalSymlinks normalises macOS /var→/private/var.
+	pwdCmd := "pwd"
+	if runtime.GOOS == "windows" {
+		pwdCmd = "cd"
+	}
+	cr := config.CueRef{Name: "pwd-check", Nature: "action", Shell: pwdCmd, Local: true}
 	ctx := cue.WithLocalDir(context.Background(), dir)
 	r, err := ex.Execute(ctx, nil, cr, config.Target{})
 	if err != nil {

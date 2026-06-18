@@ -4,6 +4,7 @@ package cue_test
 import (
 	"context"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -95,7 +96,13 @@ func TestGenerateExecutor_nonzero_exit_fails(t *testing.T) {
 func TestGenerateExecutor_uses_local_dir(t *testing.T) {
 	dir := t.TempDir()
 	ex := cue.NewGenerateExecutor()
-	cr := config.CueRef{Name: "pwd-gen", Nature: "generate", Shell: "pwd"}
+	// On Windows cmd.exe "cd" (no args) prints the CWD as a Windows path.
+	// On Unix "pwd" prints the CWD; EvalSymlinks normalises macOS /var→/private/var.
+	pwdCmd := "pwd"
+	if runtime.GOOS == "windows" {
+		pwdCmd = "cd"
+	}
+	cr := config.CueRef{Name: "pwd-gen", Nature: "generate", Shell: pwdCmd}
 	ctx := cue.WithLocalDir(context.Background(), dir)
 	r, err := ex.Execute(ctx, nil, cr, config.Target{})
 	if err != nil {
