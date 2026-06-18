@@ -86,7 +86,7 @@ func RemoteFilesKnown(ctx context.Context) bool {
 }
 
 // RemoteFileExists reports whether path is present in the remote file set.
-// Returns true (optimistic) if no set is loaded — callers must not skip the download.
+// Returns true if no set is loaded — callers must not skip the download.
 func RemoteFileExists(ctx context.Context, path string) bool {
 	set, ok := ctx.Value(remoteFilesKey{}).(map[string]struct{})
 	if !ok {
@@ -94,6 +94,36 @@ func RemoteFileExists(ctx context.Context, path string) bool {
 	}
 	_, exists := set[path]
 	return exists
+}
+
+// SupplementRemoteFiles explicitly stats each path in paths and adds the found
+// ones to the existing remote file set. Paths already in the set are skipped.
+// Returns ctx unchanged when no set is loaded or paths is empty.
+// Use this to extend coverage for absolute-path dests that lie outside the
+// working directory scanned by the initial find (e.g. /etc/nginx/…).
+func SupplementRemoteFiles(ctx context.Context, conn SSHConn, paths []string) context.Context {
+	set, ok := ctx.Value(remoteFilesKey{}).(map[string]struct{})
+	if !ok || len(paths) == 0 || conn == nil {
+		return ctx
+	}
+	var unknown []string
+	for _, p := range paths {
+		if _, exists := set[p]; !exists {
+			unknown = append(unknown, p)
+		}
+	}
+	if len(unknown) == 0 {
+		return ctx
+	}
+	found := BulkStatRemote(conn, unknown)
+	newSet := make(map[string]struct{}, len(set)+len(found))
+	for k := range set {
+		newSet[k] = struct{}{}
+	}
+	for p := range found {
+		newSet[p] = struct{}{}
+	}
+	return context.WithValue(ctx, remoteFilesKey{}, newSet)
 }
 
 type preStepKey struct{}

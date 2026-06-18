@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"path"
 	"sort"
 	"strings"
 	"time"
@@ -156,6 +157,28 @@ func Run(ctx context.Context, cfg *config.Config, scenarioNames []string, target
 			}
 		}
 		steps = filtered
+	}
+
+	// Extend the remote-file knowledge base for cue dests that are absolute paths
+	// outside target.Dir (e.g. /etc/nginx/conf.d/…). The initial find only covers
+	// the working directory; without this, executors incorrectly skip the download
+	// for those files and diff against empty content, reporting them as always changed.
+	if cue.RemoteFilesKnown(ctx) && dispatch.BulkConn != nil {
+		var absPaths []string
+		seen := make(map[string]bool)
+		for _, s := range steps {
+			if s.IsLocal {
+				continue
+			}
+			dest := s.CueRef.Dest
+			if path.IsAbs(dest) && !strings.HasPrefix(dest, target.Dir) && !seen[dest] {
+				absPaths = append(absPaths, dest)
+				seen[dest] = true
+			}
+		}
+		if len(absPaths) > 0 {
+			ctx = cue.SupplementRemoteFiles(ctx, dispatch.BulkConn, absPaths)
+		}
 	}
 
 	phases := SplitPhases(steps)

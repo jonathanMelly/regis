@@ -147,6 +147,54 @@ func TestBulkHashRemote_confirmedMissingWhenOtherHashesSucceed(t *testing.T) {
 	}
 }
 
+// ── SupplementRemoteFiles ─────────────────────────────────────────────────────
+
+// TestSupplementRemoteFiles_addsFoundPaths verifies that an absolute-path dest outside
+// the scanned working dir is added to the known set when stat confirms it exists.
+func TestSupplementRemoteFiles_addsFoundPaths(t *testing.T) {
+	absPath := "/etc/nginx/conf.d/stream-mailway.conf"
+
+	// Simulate populateRemoteFiles: only workdir files are known.
+	ctx := cue.WithRemoteFiles(context.Background(), []string{"/opt/custom/saver/binary"})
+
+	if cue.RemoteFileExists(ctx, absPath) {
+		t.Fatal("pre-condition: abs path should not be in set before supplement")
+	}
+
+	mock := &mockConn{runFunc: func(cmd string) (string, string, int, error) {
+		if strings.Contains(cmd, "stat") {
+			return fmt.Sprintf("1700000000 1024 %s\n", absPath), "", 0, nil
+		}
+		return "", "", 0, nil
+	}}
+
+	ctx = cue.SupplementRemoteFiles(ctx, mock, []string{absPath})
+
+	if !cue.RemoteFileExists(ctx, absPath) {
+		t.Error("after supplement: path confirmed by stat must be in the set")
+	}
+	if !cue.RemoteFileExists(ctx, "/opt/custom/saver/binary") {
+		t.Error("after supplement: original workdir paths must be preserved")
+	}
+}
+
+// TestSupplementRemoteFiles_trulyMissingPathStaysAbsent verifies that a path not returned
+// by stat (file truly absent on remote) stays out of the set — download is not skipped.
+func TestSupplementRemoteFiles_trulyMissingPathStaysAbsent(t *testing.T) {
+	absPath := "/etc/nginx/conf.d/missing.conf"
+	ctx := cue.WithRemoteFiles(context.Background(), []string{"/opt/custom/saver/binary"})
+
+	mock := &mockConn{runFunc: func(cmd string) (string, string, int, error) {
+		return "", "", 0, nil // stat returns nothing — file absent on remote
+	}}
+
+	ctx = cue.SupplementRemoteFiles(ctx, mock, []string{absPath})
+
+	if cue.RemoteFileExists(ctx, absPath) {
+		t.Error("after supplement: path absent from stat must remain absent — it truly does not exist")
+	}
+}
+
 // TestBulkStatRemote_batches verifies that BulkStatRemote issues multiple stat calls
 // when the path count exceeds BulkBatchSize, and merges all results correctly.
 func TestBulkStatRemote_batches(t *testing.T) {

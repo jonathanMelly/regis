@@ -3,6 +3,7 @@ package cue_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -80,6 +81,59 @@ func TestConfigExecutor_unchanged(t *testing.T) {
 	result, _ := ex.Execute(context.Background(), nil, cr, config.Target{Dir: "/opt/app"})
 	if result.Status != cue.StatusEqual {
 		t.Errorf("want StatusEqual, got %v", result.Status)
+	}
+}
+
+// TestConfigExecutor_absDestOutsideWorkdir_notSkipped is a non-regression test for the
+// bug where config cues with an absolute dest outside target.Dir were always reported as
+// changed: RemoteFilesKnown was true (find ran on workdir) but RemoteFileExists returned
+// false for the abs path, so the download was skipped and the diff ran against empty content.
+//
+// After SupplementRemoteFiles is called (by runner.Run before phases execute), the path is
+// statted explicitly and added to the set — the executor then downloads and diffs correctly.
+func TestConfigExecutor_absDestOutsideWorkdir_notSkipped(t *testing.T) {
+	content := "stream { server { listen 25; } }\n"
+	dir := t.TempDir()
+	localPath := dir + "/stream-mailway.conf"
+	if err := os.WriteFile(localPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	remotePath := "/etc/nginx/conf.d/stream-mailway.conf"
+	cr := config.CueRef{
+		Name:   "stream-conf",
+		Nature: "config",
+		Src:    config.StringOrList{localPath},
+		Dest:   remotePath,
+	}
+	tgt := config.Target{Dir: "/opt/custom/saver"}
+
+	// Simulate populateRemoteFiles: only workdir files known, abs path NOT in the set.
+	baseCtx := cue.WithCheckOnly(cue.WithRemoteFiles(context.Background(), []string{"/opt/custom/saver/saver"}))
+
+	// Bug: download skipped (RemoteFilesKnown=true, RemoteFileExists=false) → diff vs empty.
+	ex := cue.NewConfigExecutor(&mockConnWithDownload{remoteContent: content})
+	rBug, _ := ex.Execute(baseCtx, nil, cr, tgt)
+	if rBug.Status != cue.StatusChanged {
+		t.Errorf("regression guard: want StatusChanged (diff vs empty, download was skipped), got %v", rBug.Status)
+	}
+
+	// Fix: SupplementRemoteFiles adds remotePath to the set → download happens → content matches.
+	statConn := &mockConn{
+		runFunc: func(cmd string) (string, string, int, error) {
+			if strings.Contains(cmd, "stat") {
+				return fmt.Sprintf("1700000000 %d %s\n", len(content), remotePath), "", 0, nil
+			}
+			return "", "", 0, nil
+		},
+		downloads: map[string][]byte{remotePath: []byte(content)},
+	}
+	fixedCtx := cue.SupplementRemoteFiles(baseCtx, statConn, []string{remotePath})
+
+	exFixed := cue.NewConfigExecutor(statConn)
+	rFixed, _ := exFixed.Execute(fixedCtx, nil, cr, tgt)
+	if rFixed.Status != cue.StatusEqual {
+		t.Errorf("after SupplementRemoteFiles: want StatusEqual (content matches), got %v", rFixed.Status)
 	}
 }
 
