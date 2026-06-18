@@ -77,37 +77,6 @@ func TestWhenExpr_shell(t *testing.T) {
 	}
 }
 
-func TestScenario_needs_alias(t *testing.T) {
-	const src = `
-describe: "My scenario"
-needs: [build, checks]
-cues: []
-`
-	var got config.Scenario
-	if err := yaml.Unmarshal([]byte(src), &got); err != nil {
-		t.Fatal(err)
-	}
-	if len(got.Requires) != 2 {
-		t.Errorf("needs: alias not respected, Requires=%v", got.Requires)
-	}
-}
-
-func TestCueRef_cmd_alias(t *testing.T) {
-	const src = `
-name: build
-nature: action
-local: true
-cmd: go build ./...
-`
-	var got config.CueRef
-	if err := yaml.Unmarshal([]byte(src), &got); err != nil {
-		t.Fatal(err)
-	}
-	if got.Shell != "go build ./..." {
-		t.Errorf("cmd: alias not mapped to Shell, got %q", got.Shell)
-	}
-}
-
 func TestCueRef_shell_and_cmd_error(t *testing.T) {
 	const src = `
 name: build
@@ -372,18 +341,3 @@ compensation: true
 	}
 }
 
-func TestCueRef_compensationHintParsedFromYAML(t *testing.T) {
-	const src = `
-name: migrate
-nature: action
-shell: php artisan migrate
-compensation_hint: "php artisan migrate:rollback (sha: {prev_sha_short})"
-`
-	var got config.CueRef
-	if err := yaml.Unmarshal([]byte(src), &got); err != nil {
-		t.Fatal(err)
-	}
-	if got.CompensationHint == "" {
-		t.Errorf("CueRef.CompensationHint not parsed, got empty")
-	}
-}

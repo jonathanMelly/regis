@@ -230,6 +230,171 @@ scenarios:
 	}
 }
 
+// ── diff_mode round-trip ──────────────────────────────────────────────────────
+
+func TestValidateYAML_diffMode_text(t *testing.T) {
+	cfg := mustLoad(t, `
+scenarios:
+  deploy:
+    cues:
+      - name: cfg
+        nature: config
+        src: nginx.conf
+        dest: /etc/nginx/nginx.conf
+        diff_mode: text
+`)
+	if cr := cfg.Scenarios["deploy"].Cues[0]; cr.DiffMode != "text" {
+		t.Errorf("want DiffMode=text, got %q", cr.DiffMode)
+	}
+}
+
+func TestValidateYAML_diffMode_binary(t *testing.T) {
+	cfg := mustLoad(t, `
+scenarios:
+  deploy:
+    cues:
+      - name: bin
+        nature: binary
+        src: app
+        dest: app
+        diff_mode: binary
+`)
+	if cr := cfg.Scenarios["deploy"].Cues[0]; cr.DiffMode != "binary" {
+		t.Errorf("want DiffMode=binary, got %q", cr.DiffMode)
+	}
+}
+
+// ── prune: *bool round-trip ────────────────────────────────────────────────────
+
+func TestValidateYAML_prune_boolForms(t *testing.T) {
+	packCue := func(extra string) string {
+		return `
+scenarios:
+  deploy:
+    cues:
+      - name: frontend
+        nature: pack
+        src: dist/**
+        dest: /var/www/
+` + extra
+	}
+
+	t.Run("true", func(t *testing.T) {
+		cfg := mustLoad(t, packCue("        prune: true\n"))
+		cr := cfg.Scenarios["deploy"].Cues[0]
+		if cr.Prune == nil || !*cr.Prune {
+			t.Errorf("want Prune=*true, got %v", cr.Prune)
+		}
+	})
+
+	t.Run("false", func(t *testing.T) {
+		cfg := mustLoad(t, packCue("        prune: false\n"))
+		cr := cfg.Scenarios["deploy"].Cues[0]
+		if cr.Prune == nil || *cr.Prune {
+			t.Errorf("want Prune=*false, got %v", cr.Prune)
+		}
+	})
+
+	t.Run("absent", func(t *testing.T) {
+		cfg := mustLoad(t, packCue(""))
+		cr := cfg.Scenarios["deploy"].Cues[0]
+		if cr.Prune != nil {
+			t.Errorf("want Prune=nil when absent, got %v", cr.Prune)
+		}
+	})
+}
+
+// ── affects_state round-trip ──────────────────────────────────────────────────
+
+func TestValidateYAML_affectsState(t *testing.T) {
+	cfg := mustLoad(t, `
+scenarios:
+  deploy:
+    cues:
+      - name: migrate
+        nature: action
+        shell: php artisan migrate
+        affects_state: true
+`)
+	if cr := cfg.Scenarios["deploy"].Cues[0]; !cr.AffectsState {
+		t.Error("want AffectsState=true, got false")
+	}
+}
+
+// ── continue_on_error round-trip ──────────────────────────────────────────────
+
+func TestValidateYAML_continueOnError(t *testing.T) {
+	cfg := mustLoad(t, `
+scenarios:
+  deploy:
+    cues:
+      - name: warm-cache
+        nature: action
+        shell: curl -s /cache/warm
+        continue_on_error: true
+`)
+	if cr := cfg.Scenarios["deploy"].Cues[0]; !cr.ContinueOnError {
+		t.Error("want ContinueOnError=true, got false")
+	}
+}
+
+// ── local_dest + reverse round-trip ──────────────────────────────────────────
+
+func TestValidateYAML_localDest_reverse(t *testing.T) {
+	cfg := mustLoad(t, `
+scenarios:
+  deploy:
+    cues:
+      - name: nginx-conf
+        nature: render
+        shell: render-conf
+        dest: nginx.conf
+        local_dest: /tmp/nginx.conf
+        reverse: cat $ARTIFACT_PATH | convert
+`)
+	cr := cfg.Scenarios["deploy"].Cues[0]
+	if cr.LocalDest != "/tmp/nginx.conf" {
+		t.Errorf("want LocalDest=/tmp/nginx.conf, got %q", cr.LocalDest)
+	}
+	if cr.Reverse != "cat $ARTIFACT_PATH | convert" {
+		t.Errorf("want Reverse set, got %q", cr.Reverse)
+	}
+}
+
+// ── needs: alias promoted to integration ──────────────────────────────────────
+
+func TestValidateYAML_needsAlias(t *testing.T) {
+	cfg := mustLoad(t, `
+scenarios:
+  build:
+    cues: []
+  deploy:
+    needs: [build]
+    cues: []
+`)
+	if sc := cfg.Scenarios["deploy"]; len(sc.Requires) != 1 || sc.Requires[0] != "build" {
+		t.Errorf("needs: alias not mapped to Requires, got %v", sc.Requires)
+	}
+}
+
+// ── compensation_hint at cue level ───────────────────────────────────────────
+
+func TestValidateYAML_compensationHint_cueLevel(t *testing.T) {
+	cfg := mustLoad(t, `
+scenarios:
+  deploy:
+    cues:
+      - name: migrate
+        nature: action
+        shell: php artisan migrate
+        compensation_hint: "php artisan migrate:rollback (sha: {prev_sha_short})"
+`)
+	cr := cfg.Scenarios["deploy"].Cues[0]
+	if cr.CompensationHint != "php artisan migrate:rollback (sha: {prev_sha_short})" {
+		t.Errorf("want CompensationHint set, got %q", cr.CompensationHint)
+	}
+}
+
 // ── all known natures accepted via YAML ──────────────────────────────────────
 
 func TestValidateYAML_allKnownNatures_parseWithoutError(t *testing.T) {

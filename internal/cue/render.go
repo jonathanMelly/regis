@@ -7,7 +7,7 @@
 // For a folder:      dest ends with / — shell must write files into $ARTIFACT_PATH/ directory.
 // local_dest: persistent local path for rendered output; populated by regis fetch.
 // reverse: shell run by regis fetch after writing local_dest; $ARTIFACT_PATH = downloaded path.
-// Change detection: text diff for UTF-8 content, MD5 for binary.
+// Change detection: controlled by diff_mode (binary by default; text for UTF-8 diffs; auto selects by content).
 // prune: true (folder mode only) deletes remote files absent from the rendered output.
 // Always runs — even during rdiff — so comparisons reflect freshly rendered content.
 // Direction: local (rendered) → remote.
@@ -137,24 +137,48 @@ func (e *RenderExecutor) executeFile(ctx context.Context, cr config.CueRef, targ
 
 	remotePath := JoinRemotePath(e.conn, target.Dir, cr.Dest)
 
-	// Compare by remote hash — avoids downloading the rendered file.
-	// Rendered output is generated; a text diff of remote vs. local is not meaningful.
 	lmd5 := localHashBytes(localData)
 	r.LocalHash = lmd5
 	remoteMissing := RemoteFilesKnown(ctx) && !RemoteFileExists(ctx, remotePath)
-	var remoteHash string
-	if !remoteMissing {
-		remoteHash, _ = HashRemote(e.conn, remotePath)
+
+	diffMode := cr.DiffMode
+	if diffMode == "" {
+		diffMode = "binary"
 	}
-	if !remoteMissing && remoteHash != "" && lmd5 == remoteHash {
-		r.Status = StatusEqual
-		r.Elapsed = time.Since(start)
-		return r, nil
-	}
-	if remoteMissing {
-		r.Diff = fmt.Sprintf("new file  rendered:%s", truncateHash(lmd5))
+
+	// text / auto mode: download remote and produce a unified diff.
+	// Hash is used as a fast path — download only when hashes differ.
+	if !remoteMissing && (diffMode == "text" || (diffMode == "auto" && !isBinaryContent(localData))) {
+		remoteHash, _ := HashRemote(e.conn, remotePath)
+		if remoteHash != "" && lmd5 == remoteHash {
+			r.Status = StatusEqual
+			r.Elapsed = time.Since(start)
+			return r, nil
+		}
+		remoteData, _ := e.conn.Download(remotePath)
+		diff, changed := TextDiff(string(localData), string(remoteData), "remote:"+cr.Dest, "rendered:"+cr.Dest)
+		if !changed {
+			r.Status = StatusEqual
+			r.Elapsed = time.Since(start)
+			return r, nil
+		}
+		r.Diff = diff
 	} else {
-		r.Diff = fmt.Sprintf("changed  remote:%s  rendered:%s", truncateHash(remoteHash), truncateHash(lmd5))
+		// binary mode (or auto+binary content, or remote missing): hash comparison only.
+		var remoteHash string
+		if !remoteMissing {
+			remoteHash, _ = HashRemote(e.conn, remotePath)
+		}
+		if !remoteMissing && remoteHash != "" && lmd5 == remoteHash {
+			r.Status = StatusEqual
+			r.Elapsed = time.Since(start)
+			return r, nil
+		}
+		if remoteMissing {
+			r.Diff = fmt.Sprintf("new file  rendered:%s", truncateHash(lmd5))
+		} else {
+			r.Diff = fmt.Sprintf("changed  remote:%s  rendered:%s", truncateHash(remoteHash), truncateHash(lmd5))
+		}
 	}
 
 	if IsCheckOnly(ctx) {

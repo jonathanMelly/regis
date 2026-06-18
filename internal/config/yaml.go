@@ -267,6 +267,7 @@ func (c *CueRef) UnmarshalYAML(value *yaml.Node) error {
 		FailedWhen      WhenExpr          `yaml:"failed_when"`
 		ContinueOnError bool              `yaml:"continue_on_error"`
 		Sudo            bool              `yaml:"sudo"`
+		DiffMode        string            `yaml:"diff_mode"`
 		Prune           *bool             `yaml:"prune"`
 		LocalDest       string            `yaml:"local_dest"`
 		Reverse         string            `yaml:"reverse"`
@@ -309,6 +310,7 @@ func (c *CueRef) UnmarshalYAML(value *yaml.Node) error {
 	c.FailedWhen = p.FailedWhen
 	c.ContinueOnError = p.ContinueOnError
 	c.Sudo = p.Sudo
+	c.DiffMode = p.DiffMode
 	c.Prune = p.Prune
 	c.LocalDest = p.LocalDest
 	c.Reverse = p.Reverse

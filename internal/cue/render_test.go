@@ -359,6 +359,81 @@ func TestRenderExecutor_localDest_changed(t *testing.T) {
 	}
 }
 
+// --- diff_mode tests ---
+
+func TestRenderExecutor_diffmode_text_shows_unified_diff(t *testing.T) {
+	remote := "server {\n    listen 80;\n    server_name old.example.com;\n}\n"
+	local := "server {\n    listen 80;\n    server_name new.example.com;\n}\n"
+	mock := &mockRenderConn{remoteFiles: map[string][]byte{"/opt/app/gateway.conf": []byte(remote)}}
+	ex := cue.NewRenderExecutor(mock)
+	shell, ld := singleFileFixture(t, local)
+	cr := config.CueRef{
+		Name: "nginx", Nature: "render",
+		Shell:    shell,
+		Dest:     "gateway.conf",
+		LocalDest: ld,
+		DiffMode: "text",
+	}
+	ctx := cue.WithCheckOnly(context.Background())
+	r, err := ex.Execute(ctx, nil, cr, config.Target{Dir: "/opt/app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Status != cue.StatusChanged {
+		t.Errorf("content differs: want StatusChanged, got %v (err=%v)", r.Status, r.Err)
+	}
+	if !strings.Contains(r.Diff, "---") || !strings.Contains(r.Diff, "+++") {
+		t.Errorf("diff_mode text: want unified diff in r.Diff, got %q", r.Diff)
+	}
+	if !strings.Contains(r.Diff, "old.example.com") || !strings.Contains(r.Diff, "new.example.com") {
+		t.Errorf("diff_mode text: want changed lines in diff, got %q", r.Diff)
+	}
+}
+
+func TestRenderExecutor_diffmode_text_equal_no_download_on_hash_match(t *testing.T) {
+	content := "server { listen 80; }\n"
+	mock := &mockRenderConn{remoteFiles: map[string][]byte{"/opt/app/gateway.conf": []byte(content)}}
+	ex := cue.NewRenderExecutor(mock)
+	shell, ld := singleFileFixture(t, content)
+	cr := config.CueRef{
+		Name: "nginx", Nature: "render",
+		Shell:    shell,
+		Dest:     "gateway.conf",
+		LocalDest: ld,
+		DiffMode: "text",
+	}
+	r, err := ex.Execute(context.Background(), nil, cr, config.Target{Dir: "/opt/app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Status != cue.StatusEqual {
+		t.Errorf("identical content with diff_mode text: want StatusEqual, got %v (err=%v)", r.Status, r.Err)
+	}
+}
+
+func TestRenderExecutor_diffmode_text_uploads_on_change(t *testing.T) {
+	mock := &mockRenderConn{remoteFiles: map[string][]byte{"/opt/app/gateway.conf": []byte("old\n")}}
+	ex := cue.NewRenderExecutor(mock)
+	shell, ld := singleFileFixture(t, "new\n")
+	cr := config.CueRef{
+		Name: "nginx", Nature: "render",
+		Shell:    shell,
+		Dest:     "gateway.conf",
+		LocalDest: ld,
+		DiffMode: "text",
+	}
+	r, err := ex.Execute(context.Background(), nil, cr, config.Target{Dir: "/opt/app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Status != cue.StatusChanged {
+		t.Errorf("want StatusChanged, got %v (err=%v)", r.Status, r.Err)
+	}
+	if len(mock.uploadedPaths) == 0 {
+		t.Error("diff_mode text: want upload on change, none happened")
+	}
+}
+
 // TestRenderExecutor_nil_conn_param_no_panic is a non-regression test for the rdiff panic.
 // The runner passes nil as the conn parameter in dry-run mode (executors must use e.conn).
 // Calling Execute with nil conn must not panic — it must use the stored e.conn.
