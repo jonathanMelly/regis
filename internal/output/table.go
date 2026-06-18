@@ -310,8 +310,8 @@ func CueInfoLines(r cue.Result, showDiff bool, minfo *ManifestInfo) []string {
 		}
 		if showDiff && r.Diff != "" {
 			lines = append(lines, fmt.Sprintf("  %s:", r.CueName))
-			for _, l := range strings.Split(strings.TrimRight(r.Diff, "\n"), "\n") {
-				lines = append(lines, "  "+l)
+			for _, l := range strings.Split(strings.TrimRight(r.Diff, "\r\n"), "\n") {
+				lines = append(lines, "  "+strings.TrimRight(l, "\r"))
 			}
 		}
 	}
