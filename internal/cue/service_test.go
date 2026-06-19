@@ -39,6 +39,9 @@ func TestServiceExecutor_systemd_noFile_enabled(t *testing.T) {
 	if r.Status != cue.StatusEqual {
 		t.Errorf("want StatusEqual (enabled), got %v", r.Status)
 	}
+	if r.Cmd != "systemctl enable mailway" {
+		t.Errorf("systemd no-file Cmd label: want %q, got %q", "systemctl enable mailway", r.Cmd)
+	}
 }
 
 func TestServiceExecutor_systemd_noFile_notEnabled(t *testing.T) {
@@ -123,6 +126,9 @@ func TestServiceExecutor_systemd_fileChanged_enabled(t *testing.T) {
 	}
 	if mock.uploadPath != "/etc/systemd/system/mailway.service" {
 		t.Errorf("expected upload to unit path, got %q", mock.uploadPath)
+	}
+	if r.Cmd != "/etc/systemd/system/mailway.service" {
+		t.Errorf("systemd with service_file Cmd label: want %q, got %q", "/etc/systemd/system/mailway.service", r.Cmd)
 	}
 	if len(r.PostActions) == 0 || !strings.HasPrefix(r.PostActions[0].Cmd, "deploy:") {
 		t.Errorf("expected deploy: post-action, got %v", r.PostActions)
@@ -221,6 +227,9 @@ func TestServiceExecutor_crontab_installed(t *testing.T) {
 	}
 	if r.Status != cue.StatusEqual {
 		t.Errorf("want StatusEqual (crontab entry present), got %v", r.Status)
+	}
+	if r.Cmd != "crontab: saver" {
+		t.Errorf("crontab Cmd label: want %q, got %q", "crontab: saver", r.Cmd)
 	}
 }
 

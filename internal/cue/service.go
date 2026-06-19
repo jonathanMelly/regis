@@ -67,7 +67,24 @@ func serviceName(cr config.CueRef) string {
 func (e *ServiceExecutor) Execute(ctx context.Context, _ SSHConn, cr config.CueRef, target config.Target) (Result, error) {
 	start := time.Now()
 	svcName := serviceName(cr)
-	r := Result{CueName: cr.Name, Nature: "service", AffectsState: false, Cmd: fmt.Sprintf("/etc/systemd/system/%s.service", svcName)}
+	var cmdLabel string
+	switch cr.Manager {
+	case "systemd":
+		if cr.ServiceFile != "" {
+			cmdLabel = fmt.Sprintf("/etc/systemd/system/%s.service", svcName)
+		} else {
+			cmdLabel = fmt.Sprintf("systemctl enable %s", svcName)
+		}
+	case "crontab":
+		binary := cr.Binary
+		if binary == "" {
+			binary = cr.Name
+		}
+		cmdLabel = fmt.Sprintf("crontab: %s", binary)
+	default:
+		cmdLabel = svcName
+	}
+	r := Result{CueName: cr.Name, Nature: "service", AffectsState: false, Cmd: cmdLabel}
 
 	// Check 1: service unit file diff (systemd, when service_file is set)
 	fileChanged, diff, rendered, err := e.checkServiceFile(cr, target)
