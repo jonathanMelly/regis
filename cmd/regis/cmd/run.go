@@ -373,6 +373,14 @@ func newRunCommand(gf *GlobalFlags) *cobra.Command {
 					gitSHA = gitShortSHA()
 				}
 
+				// Pre-flight git check: computed locally before the TUI starts so
+				// the user sees the problem in the check-phase browse view, not after
+				// waiting for the run phase to begin.
+				var runBlockMsg string
+				if hasPhase2 && !gf.AllowDirty && !gf.NoGit {
+					runBlockMsg = runner.GitDirtyReason()
+				}
+
 				// Level2: TUI.
 				if level >= output.Level2 {
 					spinner.Stop()
@@ -380,7 +388,7 @@ func newRunCommand(gf *GlobalFlags) *cobra.Command {
 					if hasPhase2 {
 						p2 = &phase2
 					}
-					tuiErr := tui.RunLiveTUI(baseCtx, tgtName, gf.Verbose, level, minfo, gitSHA, phase1, p2, compensateEnabled)
+					tuiErr := tui.RunLiveTUI(baseCtx, tgtName, gf.Verbose, level, minfo, gitSHA, phase1, p2, compensateEnabled, runBlockMsg)
 					if rawConn != nil {
 						rawConn.Close()
 					}

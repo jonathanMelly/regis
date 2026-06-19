@@ -459,12 +459,46 @@ func currentGitRef() string {
 }
 
 // isGitClean reports whether the working tree has no uncommitted changes
-// that would affect cue source files. A dirty tree means the git_ref does
-// not fully represent what was deployed.
+// (tracked or untracked). A dirty tree means the git_ref does not fully
+// represent what was deployed.
 func isGitClean() bool {
 	out, err := exec.Command("git", "status", "--porcelain").Output()
 	if err != nil {
 		return false // can't tell → assume not clean
 	}
 	return len(strings.TrimSpace(string(out))) == 0
+}
+
+// GitDirtyReason builds a human-readable description of what makes the
+// working tree dirty: modified tracked files and/or untracked files.
+// Returns "" when the tree is clean or not in a git repo.
+func GitDirtyReason() string { return gitDirtyReason() }
+
+// gitDirtyReason is the unexported implementation.
+func gitDirtyReason() string {
+	out, err := exec.Command("git", "status", "--porcelain").Output()
+	if err != nil || len(strings.TrimSpace(string(out))) == 0 {
+		return ""
+	}
+	var modified, untracked []string
+	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
+		if len(line) < 4 {
+			continue
+		}
+		xy := line[:2]
+		file := strings.TrimSpace(line[3:])
+		if xy == "??" {
+			untracked = append(untracked, file)
+		} else {
+			modified = append(modified, file)
+		}
+	}
+	var parts []string
+	if len(modified) > 0 {
+		parts = append(parts, "uncommitted changes: "+strings.Join(modified, " "))
+	}
+	if len(untracked) > 0 {
+		parts = append(parts, "untracked files: "+strings.Join(untracked, " "))
+	}
+	return strings.Join(parts, "\n")
 }

@@ -228,3 +228,32 @@ func FileProgressFrom(ctx context.Context) func(cueName string, scanned, total i
 	fn, _ := ctx.Value(fileProgressKey{}).(func(string, int, int))
 	return fn
 }
+
+type applyStepKey struct{}
+
+// WithApplyStep stores a callback invoked by the pipeline just before each
+// apply step executes in stage 2 of the remote pipeline (not the pre-check).
+// Use it to drive a "currently applying" indicator in the TUI.
+func WithApplyStep(ctx context.Context, fn func(scenario, cue string)) context.Context {
+	return context.WithValue(ctx, applyStepKey{}, fn)
+}
+
+// ApplyStepFrom returns the apply-step callback stored in ctx, or nil if absent.
+func ApplyStepFrom(ctx context.Context) func(scenario, cue string) {
+	fn, _ := ctx.Value(applyStepKey{}).(func(string, string))
+	return fn
+}
+
+type applyResultKey struct{}
+
+// WithApplyResult stores a callback invoked by the pipeline after each step
+// in stage 2 of the remote pipeline completes (both applied and equal-skipped steps).
+func WithApplyResult(ctx context.Context, fn func(Result)) context.Context {
+	return context.WithValue(ctx, applyResultKey{}, fn)
+}
+
+// ApplyResultFrom returns the apply-result callback stored in ctx, or nil if absent.
+func ApplyResultFrom(ctx context.Context) func(Result) {
+	fn, _ := ctx.Value(applyResultKey{}).(func(Result))
+	return fn
+}

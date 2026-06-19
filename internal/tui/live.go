@@ -38,6 +38,10 @@ type liveEntry struct {
 	result      cue.Result
 	fileScanned int
 	fileTotal   int
+	// apply phase
+	applying    bool       // stage 2 is executing this step right now
+	applyDone   bool       // stage 2 result received
+	applyResult cue.Result
 }
 
 type livePrePhaseMsg    struct{ steps []cue.StepInfo }
@@ -46,6 +50,11 @@ type liveFileProgressMsg struct {
 	fullName      string
 	scanned, total int
 }
+type liveApplyStepMsg struct {
+	scenarioName string
+	cueName      string
+}
+type liveApplyResultMsg struct{ result cue.Result }
 // PhaseFunc associates a display label with a phase function.
 // The label (e.g. "check", "run") appears in the title/status line and its
 // first letter becomes the key that advances to the next phase.
@@ -154,19 +163,25 @@ type phaseModel struct {
 	gitSHA string // short hash shown in check phase title
 
 	// live phase
-	checking    bool
-	liveEntries []liveEntry
-	spinFrame   int
-	startedAt   time.Time
+	checking         bool
+	liveEntries      []liveEntry
+	spinFrame        int
+	startedAt        time.Time
+	currentApplyDesc string // "scenario / cue  →  cmd" shown during apply stage
 
 	// deploy gate (isRun=true, two-phase)
 	confirmCh chan confirmDecision // non-nil when waiting for user to press 'r' before deploying
 	confirming bool               // true when showing the "run? [y/N]" confirmation line
+	errMsg     string             // non-empty when a phase failed with no results (shown in footer)
 
 	// on_error compensate toggle (only active when confirmCh != nil)
 	compensate         bool // current toggle state (true = compensate, false = halt)
 	compensateInferred bool // initial inferred value before any user toggle
 	compensateToggled  bool // user has explicitly changed the toggle
+
+	// runBlockMsg is set when the run phase cannot start (e.g. dirty git tree).
+	// It is shown in the footer in place of the normal "r run" hint.
+	runBlockMsg string
 }
 
 func (m phaseModel) Init() tea.Cmd {
@@ -216,9 +231,47 @@ func (m phaseModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case liveApplyStepMsg:
+		for i, e := range m.liveEntries {
+			if e.info.ScenarioName == msg.scenarioName && e.info.Name == msg.cueName {
+				m.liveEntries[i].applying = true
+				// Build the command zone description from the pre-check result.
+				desc := e.info.ScenarioDesc
+				if desc == "" {
+					desc = e.info.ScenarioName
+				}
+				cmdLine := e.result.Cmd
+				if cmdLine == "" && e.result.Nature == "binary" && e.result.LocalPath != "" {
+					cmdLine = e.result.LocalPath + " → " + e.result.RemotePath
+				}
+				if cmdLine != "" {
+					m.currentApplyDesc = desc + " / " + msg.cueName + "   " + cmdLine
+				} else {
+					m.currentApplyDesc = desc + " / " + msg.cueName
+				}
+				break
+			}
+		}
+		return m, nil
+
+	case liveApplyResultMsg:
+		for i, e := range m.liveEntries {
+			if e.info.ScenarioName == msg.result.ScenarioName && e.info.Name == msg.result.CueName {
+				m.liveEntries[i].applying = false
+				m.liveEntries[i].applyDone = true
+				m.liveEntries[i].applyResult = msg.result
+				m.currentApplyDesc = ""
+				break
+			}
+		}
+		return m, nil
+
 	case liveRunCompleteMsg:
 		if len(msg.results) == 0 {
 			m.checking = false
+			if msg.err != nil {
+				m.errMsg = msg.err.Error()
+			}
 			if msg.confirmCh != nil {
 				select {
 				case msg.confirmCh <- confirmDecision{proceed: false}:
@@ -239,6 +292,7 @@ func (m phaseModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		newM.compensate = m.compensate
 		newM.compensateInferred = m.compensateInferred
 		newM.compensateToggled = m.compensateToggled
+		newM.runBlockMsg = m.runBlockMsg
 		return newM, nil
 
 	case liveTickMsg:
@@ -281,10 +335,22 @@ func (m phaseModel) titleLine() string {
 	return line
 }
 
-func liveSymbol(r cue.Result, spinFrame int, done bool) string {
-	if !done {
+func liveSymbol(e liveEntry, spinFrame int) string {
+	// Apply phase overrides: if currently applying → spinner; if apply done → apply result.
+	if e.applying {
 		return colorize(spinFrames[spinFrame], ansiYellow)
 	}
+	if e.applyDone {
+		return resultSymbol(e.applyResult)
+	}
+	// Pre-check phase.
+	if !e.done {
+		return colorize(spinFrames[spinFrame], ansiYellow)
+	}
+	return resultSymbol(e.result)
+}
+
+func resultSymbol(r cue.Result) string {
 	switch r.Status {
 	case cue.StatusChanged:
 		if !r.LocalMtime.IsZero() && !r.RemoteMtime.IsZero() && r.RemoteMtime.After(r.LocalMtime) {
@@ -338,11 +404,17 @@ func (m phaseModel) viewLive() string {
 		}
 	}
 
+	// Reserve an extra line for the apply-zone when in apply phase.
+	applyPhase := m.currentApplyDesc != ""
+	if applyPhase {
+		maxLines--
+	}
+
 	var treeLines []string
 	for _, g := range groups {
 		if len(g.indices) == 1 {
 			e := m.liveEntries[g.indices[0]]
-			sym := liveSymbol(e.result, m.spinFrame, e.done)
+			sym := liveSymbol(e, m.spinFrame)
 			name := e.info.Name
 			if e.done {
 				name = e.result.CueName
@@ -351,61 +423,99 @@ func (m phaseModel) viewLive() string {
 			if name != e.info.ScenarioName {
 				line += "   " + name
 			}
-			if e.done && e.result.FileTotal > 0 {
-				line += fmt.Sprintf("  ~%d/%d", e.result.FileChanged, e.result.FileTotal)
+			activeResult := e.result
+			if e.applyDone {
+				activeResult = e.applyResult
+			}
+			if (e.done || e.applyDone) && activeResult.FileTotal > 0 {
+				line += fmt.Sprintf("  ~%d/%d", activeResult.FileChanged, activeResult.FileTotal)
 			} else if !e.done && e.fileTotal > 0 {
 				line += "  " + liveProgressBar(e.fileScanned, e.fileTotal, 16)
 			}
-			if e.done && len(e.result.Warnings) > 0 {
+			if (e.done || e.applyDone) && len(activeResult.Warnings) > 0 {
 				line += "  ⚠"
 			}
 			treeLines = append(treeLines, line)
 		} else {
-			allDone, changed := true, 0
+			// Compute group header status considering both check and apply states.
+			allSettled := true
+			anyApplying := false
+			changed, deployed, failed := 0, 0, 0
 			for _, i := range g.indices {
 				e := m.liveEntries[i]
-				if !e.done {
-					allDone = false
+				if e.applying {
+					anyApplying = true
+					allSettled = false
+				} else if e.applyDone {
+					switch e.applyResult.Status {
+					case cue.StatusChanged:
+						deployed++
+					case cue.StatusFailed:
+						failed++
+					}
+				} else if !e.done {
+					allSettled = false
 				} else if e.result.Status == cue.StatusChanged {
 					changed++
 				}
 			}
 			var info string
-			if allDone {
-				if changed > 0 {
-					info = colorize(fmt.Sprintf("%d changed", changed), ansiGreen)
-				} else {
-					info = colorize("all in sync", ansiDim)
-				}
-			} else {
+			switch {
+			case anyApplying || !allSettled:
 				info = colorize(spinFrames[m.spinFrame], ansiYellow)
+			case failed > 0:
+				info = colorize(fmt.Sprintf("%d failed", failed), ansiRed)
+			case deployed > 0:
+				info = colorize(fmt.Sprintf("%d deployed", deployed), ansiGreen)
+			case changed > 0:
+				// Pre-check done, apply not started yet.
+				info = colorize(fmt.Sprintf("%d changed", changed), ansiGreen)
+			default:
+				info = colorize("all in sync", ansiDim)
 			}
 			treeLines = append(treeLines, fmt.Sprintf("● %s   %s", g.label, info))
 			for _, i := range g.indices {
 				e := m.liveEntries[i]
-				sym := liveSymbol(e.result, m.spinFrame, e.done)
+				sym := liveSymbol(e, m.spinFrame)
 				name := e.info.Name
 				if e.done {
 					name = e.result.CueName
 				}
 				line := fmt.Sprintf("    %s  %s", sym, name)
-				if e.done && e.result.FileTotal > 0 {
-					line += fmt.Sprintf("  ~%d/%d", e.result.FileChanged, e.result.FileTotal)
+				activeResult := e.result
+				if e.applyDone {
+					activeResult = e.applyResult
+				}
+				if (e.done || e.applyDone) && activeResult.FileTotal > 0 {
+					line += fmt.Sprintf("  ~%d/%d", activeResult.FileChanged, activeResult.FileTotal)
 				} else if !e.done && e.fileTotal > 0 {
 					line += "  " + liveProgressBar(e.fileScanned, e.fileTotal, 16)
 				}
-				if e.done && len(e.result.Warnings) > 0 {
+				if (e.done || e.applyDone) && len(activeResult.Warnings) > 0 {
 					line += "  ⚠"
 				}
 				treeLines = append(treeLines, line)
 			}
 		}
 	}
+	if maxLines < 1 {
+		maxLines = 1
+	}
 	if len(treeLines) > maxLines {
 		treeLines = treeLines[:maxLines]
 	}
 	for _, l := range treeLines {
 		sb.WriteString(l + "\n")
+	}
+
+	// Apply zone: show currently executing step + command.
+	if applyPhase {
+		desc := m.currentApplyDesc
+		if len([]rune(desc)) > m.width-4 {
+			runes := []rune(desc)
+			desc = string(runes[:m.width-7]) + "..."
+		}
+		fmt.Fprintf(&sb, "%s▸ %s%s\n", ansiDim, desc, ansiReset)
 	}
 
 	ruleWidth := m.width - 1
@@ -416,7 +526,21 @@ func (m phaseModel) viewLive() string {
 	if len(m.liveEntries) == 0 {
 		fmt.Fprintf(&sb, "%s %s…\n", phaseGerund(m.phaseLabel), m.target)
 	} else {
-		fmt.Fprintf(&sb, "%d / %d   q quit\n", checked, len(m.liveEntries))
+		// Count apply progress when in apply phase.
+		applyDone, applyTotal := 0, 0
+		for _, e := range m.liveEntries {
+			if e.applyDone || e.applying || e.result.Status != cue.StatusEqual {
+				applyTotal++
+				if e.applyDone {
+					applyDone++
+				}
+			}
+		}
+		if applyTotal > 0 {
+			fmt.Fprintf(&sb, "deploying %d / %d   q quit\n", applyDone, applyTotal)
+		} else {
+			fmt.Fprintf(&sb, "%d / %d   q quit\n", checked, len(m.liveEntries))
+		}
 	}
 	return sb.String()
 }
@@ -469,6 +593,8 @@ func (m phaseModel) viewBrowse() string {
 
 	if m.searchMode {
 		fmt.Fprintf(&sb, "\n/ %s█\n", m.searchQuery)
+	} else if m.errMsg != "" {
+		fmt.Fprintf(&sb, "\n%sFAILED: %s%s  q quit\n", ansiRed, m.errMsg, ansiReset)
 	} else if m.confirming {
 		fmt.Fprintf(&sb, "\n%s? [y/N]\n", m.nextPhaseLabel)
 	} else {
@@ -484,7 +610,7 @@ func (m phaseModel) viewBrowse() string {
 			skippedHint = "  h hide-skipped"
 		}
 		var compensateHint string
-		if m.confirmCh != nil {
+		if m.confirmCh != nil && m.runBlockMsg == "" {
 			if m.compensate {
 				compensateHint = "  o on_error:compensate"
 			} else {
@@ -492,7 +618,14 @@ func (m phaseModel) viewBrowse() string {
 			}
 		}
 		var runHint string
-		if m.confirmCh != nil && m.nextPhaseLabel != "" {
+		if m.runBlockMsg != "" {
+			// Summarise the block reason on one line (first line only, with marker).
+			firstLine := m.runBlockMsg
+			if idx := strings.IndexByte(m.runBlockMsg, '\n'); idx >= 0 {
+				firstLine = m.runBlockMsg[:idx]
+			}
+			runHint = fmt.Sprintf("  %s⚠ %s — use --allow-dirty%s", ansiYellow, firstLine, ansiReset)
+		} else if m.confirmCh != nil && m.nextPhaseLabel != "" {
 			runHint = fmt.Sprintf("  %c %s", rune(m.nextPhaseLabel[0]), m.nextPhaseLabel)
 		}
 		fmt.Fprintf(&sb, "\n↑↓ navigate  →← tab/collapse  +/- all  / search%s%s%s  q quit\n", skippedHint, compensateHint, runHint)
@@ -975,7 +1108,12 @@ func (m phaseModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		default:
 			if m.confirmCh != nil && m.nextPhaseLabel != "" &&
 				msg.String() == string(rune(m.nextPhaseLabel[0])) {
-				m.confirming = true
+				if m.runBlockMsg != "" {
+					// Run is blocked — show full reason as error.
+					m.errMsg = m.runBlockMsg + "\nuse --allow-dirty to deploy anyway"
+				} else {
+					m.confirming = true
+				}
 			}
 		}
 	}
@@ -1193,6 +1331,7 @@ func RunLiveTUI(
 	phase1 PhaseFunc,
 	phase2 *PhaseFunc,
 	compensate bool,
+	runBlockMsg string,
 ) error {
 	var confirmCh chan confirmDecision
 	if phase2 != nil {
@@ -1215,6 +1354,7 @@ func RunLiveTUI(
 		confirmCh:          confirmCh,
 		compensate:         compensate,
 		compensateInferred: compensate,
+		runBlockMsg:        runBlockMsg,
 	}
 	prog := tea.NewProgram(m, tea.WithAltScreen())
 
@@ -1226,6 +1366,12 @@ func RunLiveTUI(
 	})
 	ctx = cue.WithFileProgress(ctx, func(fullName string, scanned, total int) {
 		prog.Send(liveFileProgressMsg{fullName: fullName, scanned: scanned, total: total})
+	})
+	ctx = cue.WithApplyStep(ctx, func(scenario, cueName string) {
+		prog.Send(liveApplyStepMsg{scenarioName: scenario, cueName: cueName})
+	})
+	ctx = cue.WithApplyResult(ctx, func(r cue.Result) {
+		prog.Send(liveApplyResultMsg{result: r})
 	})
 
 	type runResult struct {

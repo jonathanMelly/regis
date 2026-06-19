@@ -259,12 +259,18 @@ func executeRemote(
 		if c.err == nil && c.result.Status == cue.StatusEqual {
 			// Remote already matches local — emit the pre-check result and move on.
 			results = append(results, c.result)
+			if applyResult := cue.ApplyResultFrom(ctx); applyResult != nil {
+				applyResult(c.result)
+			}
 			if onResult != nil {
 				onResult(c.result)
 			}
 			continue
 		}
 		// Changed, Skipped (action), Failed pre-check, or pre-check error — apply now.
+		if applyStep := cue.ApplyStepFrom(ctx); applyStep != nil {
+			applyStep(step.ScenarioName, step.Name)
+		}
 		notifyStep(ctx, step, "(apply)")
 		stepCtx := stepWithFileProgress(ctx, step)
 		r, err := fn(stepCtx, conn, step.CueRef, target)
@@ -276,6 +282,9 @@ func executeRemote(
 		r.GroupScenarioName = step.GroupScenarioName
 		r.GroupScenarioDesc = step.GroupScenarioDesc
 		results = append(results, r)
+		if applyResult := cue.ApplyResultFrom(ctx); applyResult != nil {
+			applyResult(r)
+		}
 		if onResult != nil {
 			onResult(r)
 		}

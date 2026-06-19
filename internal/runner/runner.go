@@ -265,7 +265,11 @@ func Run(ctx context.Context, cfg *config.Config, scenarioNames []string, target
 			"--no-git: deploying without git tracking; state will have no git_ref")
 	} else if !isGitClean() {
 		if !opts.AllowDirty {
-			return nil, fmt.Errorf("working tree has uncommitted changes — commit or stash first, or use --allow-dirty to deploy anyway")
+			reason := GitDirtyReason()
+			if reason == "" {
+				reason = "working tree is not clean"
+			}
+			return nil, fmt.Errorf("%s\ncommit/stash changes or use --allow-dirty to deploy anyway", reason)
 		}
 		rr.SystemWarnings = append(rr.SystemWarnings,
 			"--allow-dirty: deploying with uncommitted changes; git_ref in state is approximate")
