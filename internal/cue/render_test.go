@@ -359,6 +359,61 @@ func TestRenderExecutor_localDest_changed(t *testing.T) {
 	}
 }
 
+// TestRenderExecutor_stdout_wins_over_stale_local_dest is a regression test for the case
+// where local_dest has stale content from a prior generate/fetch run but the shell writes
+// fresh content to stdout. The diff must reflect stdout, not the stale file.
+func TestRenderExecutor_stdout_wins_over_stale_local_dest(t *testing.T) {
+	staleContent := "${NGINX_RESOLVER} placeholder — docker template"
+	deployedContent := "127.0.0.1 — deployed config"
+
+	// local_dest pre-populated with stale content (as if generate ran last).
+	ldPath := filepath.Join(t.TempDir(), "gateway.conf")
+	if err := os.WriteFile(ldPath, []byte(staleContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Shell writes deployed content to stdout (like render-nginx does).
+	// Use a marker string that is easy to find in both + and - diff lines
+	// without worrying about \r\n from Windows echo.
+	var shell string
+	if runtime.GOOS == "windows" {
+		shell = "echo " + deployedContent
+	} else {
+		shell = "printf '%s' '" + deployedContent + "'"
+	}
+
+	mock := &mockRenderConn{remoteFiles: map[string][]byte{"/opt/app/gateway.conf": []byte(staleContent)}}
+	ex := cue.NewRenderExecutor(mock)
+	cr := config.CueRef{
+		Name: "nginx", Nature: "render",
+		Shell:     shell,
+		Dest:      "gateway.conf",
+		LocalDest: ldPath,
+		DiffMode:  "text",
+	}
+	ctx := cue.WithCheckOnly(context.Background())
+	r, err := ex.Execute(ctx, nil, cr, config.Target{Dir: "/opt/app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Remote == stale content, rendered == stdout (deployed). They differ → StatusChanged.
+	if r.Status != cue.StatusChanged {
+		t.Errorf("stdout differs from remote: want StatusChanged, got %v (err=%v)", r.Status, r.Err)
+	}
+	// The rendered (+) side must contain deployed content.
+	// (Stale content correctly appears on the - side — what the remote has.)
+	// Check for "127.0.0.1" which is unambiguous in either side of the diff.
+	if !strings.Contains(r.Diff, "127.0.0.1") {
+		t.Errorf("diff must contain deployed content; got:\n%s", r.Diff)
+	}
+	// The stale placeholder must not appear on the + (rendered) side.
+	for _, line := range strings.Split(r.Diff, "\n") {
+		if strings.HasPrefix(line, "+") && strings.Contains(line, "${NGINX_RESOLVER}") {
+			t.Errorf("diff + side must not contain stale placeholder; offending line: %q\nfull diff:\n%s", line, r.Diff)
+		}
+	}
+}
+
 // --- diff_mode tests ---
 
 func TestRenderExecutor_diffmode_text_shows_unified_diff(t *testing.T) {

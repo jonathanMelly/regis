@@ -106,13 +106,12 @@ func (e *RenderExecutor) Execute(ctx context.Context, conn SSHConn, cr config.Cu
 		return e.executeFolder(ctx, cr, target, r, artifactPath, start)
 	}
 
-	// Single-file mode: if the shell wrote nothing to artifactPath but produced stdout,
-	// use stdout as the artifact (shell: without > "$ARTIFACT_PATH" redirect).
-	// This is simpler and cross-platform — no shell redirect quoting issues.
+	// Single-file mode: if the shell produced stdout, use it as the artifact.
+	// stdout always wins over pre-existing artifactPath content (e.g. stale local_dest
+	// written by a prior generate/fetch run). Only fall back to the file when stdout is
+	// empty — that means the shell wrote to $ARTIFACT_PATH directly.
 	if stdout != "" {
-		if fi, statErr := os.Stat(artifactPath); statErr != nil || fi.Size() == 0 {
-			_ = os.WriteFile(artifactPath, []byte(stdout), 0644)
-		}
+		_ = os.WriteFile(artifactPath, []byte(stdout), 0644)
 	}
 
 	return e.executeFile(ctx, cr, target, r, artifactPath, start)
