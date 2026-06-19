@@ -74,8 +74,9 @@ The first target is used by default. `--target <name>` selects by name.
 | `local_dest` | no | Local path for rendered output; $ARTIFACT_PATH points here during render and fetch (render only) |
 | `reverse` | no | Shell command run during fetch to transform the downloaded artifact into local source files; $ARTIFACT_PATH = downloaded path (render only) |
 | `manager` | no | systemd | crontab (built-in), or any custom string (e.g. pm2); presence infers nature: service |
-| `binary` | no | Binary filename relative to target.dir (service, crontab) |
-| `service_file` | no | Local path to systemd unit file; uploaded to /etc/systemd/system/<name>.service when changed |
+| `binary` | no | Binary filename relative to target.dir (crontab); required for crontab services |
+| `service_file` | no | Local path to systemd unit file; uploaded to /etc/systemd/system/<basename>.service when changed; basename without extension is used as service name |
+| `service_name` | no | Explicit systemd service unit name (e.g. nginx) — required when service_file is absent; used for systemctl is-enabled / deploy post-action |
 | `health` | no | Health-check command (crontab watchdog) |
 | `commands` | no | Override or extend manager commands (start, stop, restart, reload, deploy, status). Template vars: {name}, {binary}, {dir}, {service_file}. Action refs: {restart}, {reload}, etc. expand to the pre-override base command |
 | `compensation` | no | Per-cue compensation on error — compensation: "cmd" runs a command; compensation: {shell, sudo} for sudo; compensation: defer re-runs the cue shell after all compensations; compensation: interactive drops to operator shell; file natures warn (no automated file restore — use regis state hint) |
@@ -531,7 +532,7 @@ rebuild checkpoint, skipping the broken state.
 | `regis service` | manage services on the target (start, stop, restart, reload, enable, disable, logs) |
 | `regis show` | show the live deployment state on the target |
 | `regis ssh` | open an interactive SSH session to the target |
-| `regis state` | inspect and verify deployment state |
+| `regis state [subcommand]` | show deployment state (local + remote); subcommands: show, list, check, adopt, hint |
 
 ---
 
