@@ -80,7 +80,9 @@ func collectVarRefs(cfg *config.Config) []string {
 }
 
 func newEnvCommand(gf *GlobalFlags) *cobra.Command {
-	return &cobra.Command{
+	var initFlag bool
+
+	c := &cobra.Command{
 		Use:   "env",
 		Short: "show env files and variable sources for a target",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -189,6 +191,47 @@ func newEnvCommand(gf *GlobalFlags) *cobra.Command {
 				return nil
 			}
 
+			// --init: create target env file with missing keys set to empty.
+			if initFlag {
+				if target == nil {
+					return fmt.Errorf("--init requires a target (use --target or define one in regis.yml)")
+				}
+				existing := make(map[string]bool)
+				if m, readErr := parseDotenvFile(targetEnvPath); readErr == nil {
+					for k := range m {
+						existing[k] = true
+					}
+				}
+				var missing []string
+				for _, name := range varNames {
+					if !existing[name] {
+						missing = append(missing, name)
+					}
+				}
+				if len(missing) == 0 {
+					fmt.Fprintf(out, "%s already contains all referenced variables.\n", targetEnvPath)
+					return nil
+				}
+				f, openErr := os.OpenFile(targetEnvPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+				if openErr != nil {
+					return fmt.Errorf("open %s: %w", targetEnvPath, openErr)
+				}
+				for _, name := range missing {
+					if _, writeErr := fmt.Fprintf(f, "%s=\n", name); writeErr != nil {
+						_ = f.Close()
+						return fmt.Errorf("write %s: %w", targetEnvPath, writeErr)
+					}
+				}
+				if closeErr := f.Close(); closeErr != nil {
+					return fmt.Errorf("close %s: %w", targetEnvPath, closeErr)
+				}
+				fmt.Fprintf(out, "Wrote %d key(s) to %s:\n", len(missing), targetEnvPath)
+				for _, name := range missing {
+					fmt.Fprintf(out, "  %s=\n", name)
+				}
+				return nil
+			}
+
 			fmt.Fprintln(out, "Variables referenced in regis.yml:")
 
 			// Column widths.
@@ -256,6 +299,9 @@ func newEnvCommand(gf *GlobalFlags) *cobra.Command {
 			return nil
 		},
 	}
+
+	c.Flags().BoolVar(&initFlag, "init", false, "create target env file with missing referenced variables set to empty values")
+	return c
 }
 
 // readDotenv is a thin wrapper that reads a dotenv file and returns the map.

@@ -179,6 +179,80 @@ func TestEnvCommand_SecretMasking(t *testing.T) {
 	}
 }
 
+func TestEnvCommand_Init_CreatesFile(t *testing.T) {
+	dir := t.TempDir()
+
+	writeFile(t, dir, "regis.yml", minimalRegisYml("prod", "NODE_HOST", "DEPLOY_TOKEN"))
+
+	out, err := runEnvCommand(t, dir, "prod", "--init")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\noutput: %s", err, out)
+	}
+
+	// Output should report written keys.
+	if !strings.Contains(out, "NODE_HOST=") {
+		t.Errorf("expected NODE_HOST= in output, got:\n%s", out)
+	}
+	if !strings.Contains(out, "DEPLOY_TOKEN=") {
+		t.Errorf("expected DEPLOY_TOKEN= in output, got:\n%s", out)
+	}
+
+	// File should exist and contain empty keys.
+	data, readErr := os.ReadFile(filepath.Join(dir, ".env.prod"))
+	if readErr != nil {
+		t.Fatalf("expected .env.prod to be created: %v", readErr)
+	}
+	content := string(data)
+	if !strings.Contains(content, "NODE_HOST=") {
+		t.Errorf(".env.prod missing NODE_HOST=, got:\n%s", content)
+	}
+	if !strings.Contains(content, "DEPLOY_TOKEN=") {
+		t.Errorf(".env.prod missing DEPLOY_TOKEN=, got:\n%s", content)
+	}
+}
+
+func TestEnvCommand_Init_SkipsExistingKeys(t *testing.T) {
+	dir := t.TempDir()
+
+	writeFile(t, dir, "regis.yml", minimalRegisYml("prod", "NODE_HOST", "DEPLOY_TOKEN"))
+	writeFile(t, dir, ".env.prod", "NODE_HOST=already-set\n")
+
+	out, err := runEnvCommand(t, dir, "prod", "--init")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\noutput: %s", err, out)
+	}
+
+	// Only the missing key should appear in output.
+	if strings.Contains(out, "NODE_HOST=") {
+		t.Errorf("expected NODE_HOST to be skipped, got:\n%s", out)
+	}
+	if !strings.Contains(out, "DEPLOY_TOKEN=") {
+		t.Errorf("expected DEPLOY_TOKEN= to be added, got:\n%s", out)
+	}
+
+	// Existing value must not be overwritten.
+	data, _ := os.ReadFile(filepath.Join(dir, ".env.prod"))
+	if !strings.Contains(string(data), "NODE_HOST=already-set") {
+		t.Errorf("existing value overwritten, got:\n%s", string(data))
+	}
+}
+
+func TestEnvCommand_Init_NothingToAdd(t *testing.T) {
+	dir := t.TempDir()
+
+	writeFile(t, dir, "regis.yml", minimalRegisYml("prod", "NODE_HOST"))
+	writeFile(t, dir, ".env.prod", "NODE_HOST=set\n")
+
+	out, err := runEnvCommand(t, dir, "prod", "--init")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\noutput: %s", err, out)
+	}
+
+	if !strings.Contains(out, "already contains all") {
+		t.Errorf("expected 'already contains all' message, got:\n%s", out)
+	}
+}
+
 func TestEnvCommand_TargetFlag(t *testing.T) {
 	dir := t.TempDir()
 
