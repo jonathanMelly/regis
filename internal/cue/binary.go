@@ -1,8 +1,33 @@
 // internal/cue/binary.go
 // doc:nature binary
-// Uploads a compiled executable. Change detection: mtime+size fast path, hash fallback.
-// Atomic upload: copies to <dest>.new, then mv. Direction: local→remote.
+// Uploads a compiled executable. Direction: local→remote.
+// Change detection: mtime+size fast path, hash fallback.
+// Atomic upload: copies to <dest>.new, then mv.
 // compensation: file state is not automatically restored — use `regis state hint` for recovery guidance.
+//
+// managed_by: combines binary upload + service registration in one cue (preferred over a separate service cue
+// for custom binaries). Scalar or struct form:
+//
+// ```yaml
+// # scalar — crontab or systemd
+// - name: app
+//   src: bin/app
+//   dest: app
+//   managed_by: crontab          # nature: binary inferred from src: + managed_by:
+//
+// # struct — systemd with unit file
+// - name: app
+//   src: bin/app
+//   dest: app
+//   managed_by:
+//     manager: systemd
+//     service_file: deploy/app.service   # uploaded to /etc/systemd/system/app.service
+//     sudo: true
+//     restart: false             # skip restart here — handled by scenario post:
+// ```
+//
+// After upload the service registration check runs and queues deploy:<name> when not yet installed.
+// post: restart:<name> / reload:<name> shorthands resolve managed_by: cues the same as nature: service cues.
 package cue
 
 import (
@@ -43,13 +68,67 @@ func joinWindowsRemote(dir, dest string) string {
 }
 
 // BinaryExecutor handles nature: binary cues (mtime+size fast compare, hash fallback, upload).
-type BinaryExecutor struct{ conn SSHConn }
+// When cr.ManagedBy is set, it also checks and registers the service after upload.
+type BinaryExecutor struct {
+	conn SSHConn
+	env  map[string]string
+}
 
 // NewBinaryExecutor creates a BinaryExecutor.
-func NewBinaryExecutor(conn SSHConn) *BinaryExecutor { return &BinaryExecutor{conn: conn} }
+// Pass the target's env map (from config.BuildEnvForTarget) to enable ${VAR} expansion
+// in service unit files when managed_by: includes a service_file:.
+func NewBinaryExecutor(conn SSHConn, env ...map[string]string) *BinaryExecutor {
+	e := &BinaryExecutor{conn: conn}
+	if len(env) > 0 {
+		e.env = env[0]
+	}
+	return e
+}
 
-// Execute compares local file to remote (mtime+size fast path, hash fallback), uploads if different.
-func (e *BinaryExecutor) Execute(ctx context.Context, _ SSHConn, cr config.CueRef, target config.Target) (Result, error) {
+// Execute compares local file to remote, uploads if different, then handles service
+// registration when managed_by: is set.
+func (e *BinaryExecutor) Execute(ctx context.Context, conn SSHConn, cr config.CueRef, target config.Target) (Result, error) {
+	r, err := e.executeBinary(ctx, cr, target)
+	if err != nil || r.Status == StatusFailed {
+		return r, err
+	}
+	if cr.ManagedBy != nil {
+		svcCR := config.ProjectManagedBy(cr)
+		svcExec := NewServiceExecutor(e.conn, e.env)
+		svcResult, svcErr := svcExec.Execute(ctx, e.conn, svcCR, target)
+		if svcErr != nil {
+			return r, svcErr
+		}
+		if svcResult.Status == StatusFailed {
+			r.Status = StatusFailed
+			r.Err = svcResult.Err
+			return r, nil
+		}
+		if svcResult.Status == StatusChanged && r.Status == StatusEqual {
+			r.Status = StatusChanged
+		}
+		if svcResult.Diff != "" {
+			r.Diff = svcResult.Diff
+		}
+		// Auto-restart: queue restart:<svc> when something changed and restart not opted out.
+		// Order: service registration (deploy:) → restart: → custom post:.
+		var restartActions []PostAction
+		if r.Status == StatusChanged && !IsCheckOnly(ctx) {
+			if cr.ManagedBy.Restart == nil || *cr.ManagedBy.Restart {
+				restartActions = []PostAction{{Cmd: "restart:" + serviceName(svcCR), Sudo: svcCR.Sudo}}
+			}
+		}
+		combined := make([]PostAction, 0, len(svcResult.PostActions)+len(restartActions)+len(r.PostActions))
+		combined = append(combined, svcResult.PostActions...)
+		combined = append(combined, restartActions...)
+		combined = append(combined, r.PostActions...)
+		r.PostActions = combined
+	}
+	return r, nil
+}
+
+// executeBinary compares local file to remote (mtime+size fast path, hash fallback), uploads if different.
+func (e *BinaryExecutor) executeBinary(ctx context.Context, cr config.CueRef, target config.Target) (Result, error) {
 	start := time.Now()
 	r := Result{
 		CueName:        cr.Name,

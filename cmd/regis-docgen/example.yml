@@ -18,12 +18,12 @@ scenarios:
   deploy:
     describe: Deploy binary and config
     requires: [build]
-    post: restart:app      # fires once if env or bin changed — even if only one of them did
+    post: restart:app      # fires once if bin or env changed — even if only one of them did
     cues:
-      - name: bin
-        nature: binary
+      - name: app           # managed_by: combines binary upload + service registration in one cue
         src: bin/app
         dest: app
+        managed_by: crontab # scalar: crontab | systemd; struct: {manager: systemd, service_file: deploy/app.service, sudo: true}
       - name: env
         nature: secret
         src: .env.server
@@ -35,9 +35,3 @@ scenarios:
     describe: Full deployment
     cues:
       - { scenario: deploy }
-
-services:
-  - name: app
-    manager: crontab
-    binary: app
-    health: curl -sf http://localhost:8080/health

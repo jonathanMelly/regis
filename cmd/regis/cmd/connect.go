@@ -94,7 +94,7 @@ func buildDispatch(conn cue.SSHConn, cfg *config.Config, tgt *config.Target, gf 
 	}
 	return runner.Dispatch{
 		BulkConn: conn,
-		Binary:   cue.NewBinaryExecutor(conn),
+		Binary:   cue.NewBinaryExecutor(conn, env),
 		Config:   cue.NewConfigExecutor(conn, env),
 		Secret:   cue.NewSecretExecutor(conn),
 		Action:   cue.NewActionExecutor(conn),

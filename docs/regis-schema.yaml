@@ -27,7 +27,7 @@ scenarios:
     on_error: halt                            # compensate|halt|continue — Override for run.on_error
     cues:
       - name: ""                              # mandatory — Unique within the scenario
-        nature: binary                        # mandatory — binary|config|secret|action|generate|render|pack|service — inferred when manager: is set (→ service) or git: true (→ pack)
+        nature: binary                        # mandatory — binary|config|secret|action|generate|render|pack|service — inferred: manager: set → service; managed_by: + src: → binary; git: true → pack
         local: false                          # true = run on local machine (action only); default = run on SSH target
         # ── file upload: binary/secret = single file · config = multi-file/glob/tree · pack = glob tree with prune · or use git: true instead of src for pack ──
         src: []                               # Local source path — binary/secret: single file only; config: scalar path, glob string, or YAML list
@@ -53,12 +53,14 @@ scenarios:
         local_dest: ""                        # Local path for rendered output; $ARTIFACT_PATH points here during render and fetch (render only)
         reverse: ""                           # Shell command run during fetch to transform the downloaded artifact into local source files; $ARTIFACT_PATH = downloaded path (render only)
         # ── service (manager: present infers nature: service) ──
-        manager: ""                           # systemd | crontab (built-in), or any custom string (e.g. pm2); presence infers nature: service
+        manager: ""                           # systemd | crontab (built-in), or any custom string (e.g. pm2); presence infers nature: service; for custom binaries prefer managed_by: on the binary cue
         binary: ""                            # Binary filename relative to target.dir (crontab); required for crontab services
         service_file: ""                      # Local path to systemd unit file; uploaded to /etc/systemd/system/<basename>.service when changed; basename without extension is used as service name
         service_name: ""                      # Explicit systemd service unit name (e.g. nginx) — required when service_file is absent; used for systemctl is-enabled / deploy post-action
         health: ""                            # Health-check command (crontab watchdog)
         commands: {}                          # Override or extend manager commands (start, stop, restart, reload, deploy, status). Template vars: {name}, {binary}, {dir}, {service_file}. Action refs: {restart}, {reload}, etc. expand to the pre-override base command
+        # ── managed_by: binary + service in one cue (preferred for custom binaries) ──
+        managed_by: ""                        # combine binary upload with service registration in one cue — scalar: managed_by: crontab; struct: managed_by: {manager: systemd, service_file: path/to/unit, sudo: true}; crontab derives binary name from dest:; replaces a separate service cue for custom binaries; nature: binary inferred when src: is also present
         # ── per-cue compensation (infers on_error: compensate; "cmd"/{shell,sudo}/defer/interactive) ──
         compensation: ""                      # Per-cue compensation on error — compensation: "cmd" runs a command; compensation: {shell, sudo} for sudo; compensation: defer re-runs the cue shell after all compensations; compensation: interactive drops to operator shell; file natures warn (no automated file restore — use regis state hint)
         compensation_hint: ""                 # Hint shown by 'regis state hint' for this cue — e.g. DB migration reversal command. Supports {prev_sha} placeholder.

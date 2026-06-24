@@ -448,8 +448,8 @@ func resolvePostAction(pa cue.PostAction, cfg *config.Config, tgt config.Target)
 	return pa.Cmd, pa.Sudo
 }
 
-// findServiceCue returns the first service cue (nature: service) whose ServiceID
-// (binary, service_name, or service_file basename) matches svcName, scanning all scenarios.
+// findServiceCue returns the CueRef whose service ID matches svcName, scanning all scenarios.
+// Matches nature: service cues and nature: binary cues with managed_by: (returning the projected CueRef).
 func findServiceCue(cfg *config.Config, svcName string) (config.CueRef, bool) {
 	for _, sc := range cfg.Scenarios {
 		for _, cr := range sc.Cues {
@@ -458,6 +458,12 @@ func findServiceCue(cfg *config.Config, svcName string) (config.CueRef, bool) {
 			}
 			if cr.Nature == "service" && config.ServiceID(cr) == svcName {
 				return cr, true
+			}
+			if cr.Nature == "binary" && cr.ManagedBy != nil {
+				projected := config.ProjectManagedBy(cr)
+				if config.ServiceID(projected) == svcName {
+					return projected, true
+				}
 			}
 		}
 	}

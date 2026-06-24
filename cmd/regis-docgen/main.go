@@ -143,7 +143,7 @@ A ` + "`post:`" + ` field on a scenario fires once if **any remote cue** in the 
 
 
 
-` + "```yaml\nSaver:\n  post: restart:saver   # runs once if env or bin changed; skipped if only local build changed\n  cues:\n    - { name: build, nature: action, local: true, cmd: go build … }\n    - { name: env,   nature: secret, … }   # changing this triggers the post\n    - { name: bin,   nature: binary, … }   # changing this also triggers the post\n```" + `
+` + "```yaml\nSaver:\n  post: restart:saver   # runs once if env or bin changed; skipped if only local build changed\n  cues:\n    - { name: build, nature: action, local: true, cmd: go build … }\n    - { name: env,   nature: secret, … }   # changing this triggers the post\n    - name: saver             # managed_by: registers the service — restart:saver resolves here\n      src: bin/saver\n      dest: saver\n      managed_by: crontab\n      # OR: managed_by: {manager: systemd, service_file: deploy/saver.service, sudo: true}\n```" + `
 
 
 
@@ -155,13 +155,21 @@ Scenario-level post and cue-level posts are pooled together before deduplication
 
 ` + "```yaml\npost: restart:saver   # expands to the service's restart command\npost: reload:nginx    # expands to the service's reload command\n```" + `
 
-` + "Shorthands scan all scenarios for a service cue (" + `nature: service` + ") whose " + `name:` + " matches, call " + `manager.ExpandCommands` + ", and inherit the service cue's " + `sudo:` + " flag. Expanded before deduplication. " + `deploy:<name>` + " is also supported (runs " + `systemctl daemon-reload && systemctl enable <name>` + " for systemd)." + `
+` + "Shorthands scan all scenarios for a service cue (" + "`nature: service`" + " or a binary cue with `managed_by:`) whose `name:` matches, call " + "`manager.ExpandCommands`" + ", and inherit the service cue's `sudo:` flag. Expanded before deduplication. `deploy:<name>` is also supported (runs `systemctl daemon-reload && systemctl enable <name>` for systemd)." + `
 
 ### Service command overrides
 
 ` + "`commands:`" + ` overrides or adds actions for any service. Template variables: ` + "`{name}`" + `, ` + "`{binary}`" + `, ` + "`{dir}`" + `, ` + "`{service_file}`" + `. Action references ` + "`{start}`" + `, ` + "`{stop}`" + `, ` + "`{restart}`" + `, ` + "`{reload}`" + ` etc. expand to the **pre-override** base command, enabling a call-super pattern:
 
 ` + "```yaml\nMyScenario:\n  cues:\n    - name: nginx-front   # infers nature: service from manager:\n      manager: systemd\n      sudo: true\n      commands:\n        reload: nginx -t && {reload}   # test config, then run original systemctl reload nginx-front\n```" + `
+
+### managed_by: binary + service in one cue
+
+` + "`managed_by:`" + ` is the preferred approach when you deploy a **custom binary** that also needs service management. It combines binary upload and service registration into a single cue — no separate `+ "`nature: service`" + ` cue required.
+
+` + "```yaml\nDeploy:\n  post: restart:app      # resolved via the managed_by: cue below\n  cues:\n    - name: app\n      src: bin/app\n      dest: app\n      managed_by: crontab   # scalar — nature: binary inferred from src: + managed_by:\n\n    - name: app\n      src: bin/app\n      dest: app\n      managed_by:            # struct — systemd with unit file\n        manager: systemd\n        service_file: deploy/app.service\n        sudo: true\n        restart: false        # skip auto-restart; let scenario post: handle it\n```" + `
+
+` + "The `restart: true` default restarts the service immediately after upload when the binary changed. Set `restart: false` when the scenario `post:` handles the restart (e.g. to ensure config is also applied before restarting)." + `
 
 ### requires vs inline scenario refs
 
@@ -470,6 +478,8 @@ func buildDenseSchema(typesFile string) (string, error) {
 			b.WriteString("        # ── pack / render folder mode ──\n")
 		case "manager":
 			b.WriteString("        # ── service (manager: present infers nature: service) ──\n")
+		case "managed_by":
+			b.WriteString("        # ── managed_by: binary + service in one cue (preferred for custom binaries) ──\n")
 		case "compensation":
 			b.WriteString("        # ── per-cue compensation (infers on_error: compensate; \"cmd\"/{shell,sudo}/defer/interactive) ──\n")
 		}
@@ -812,6 +822,8 @@ func buildSchemaSection(typesFile string) (string, error) {
 	buf.WriteString("### service cues (nature: service)\n\n")
 
 	buf.WriteString("Service metadata lives inline in the cue list. Setting `manager:` infers `nature: service`.\n\n")
+
+	buf.WriteString("**For custom binaries, prefer `managed_by:` on the binary cue** — it combines upload and service registration in one cue and works transparently with `post: restart:<name>` shorthands. A separate `nature: service` cue is mainly useful for system services you don't upload yourself (e.g. nginx, postgresql).\n\n")
 
 	buf.WriteString("Built-in managers (`systemd`, `crontab`) provide default commands automatically. Any other manager string requires `commands:` to be declared.\n\n")
 

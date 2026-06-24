@@ -8,8 +8,9 @@ import (
 )
 
 // ServiceID returns the canonical identifier for a service cue —
-// binary (crontab), service_name, or service_file basename without .service extension.
+// service_name, service_file basename, or binary name.
 // Returns "" when the cue has no service identifier.
+// For binary cues with managed_by:, call ServiceID(ProjectManagedBy(cr)) instead.
 func ServiceID(cr CueRef) string {
 	if cr.ServiceName != "" {
 		return cr.ServiceName
@@ -21,6 +22,28 @@ func ServiceID(cr CueRef) string {
 		return cr.Binary
 	}
 	return ""
+}
+
+// ProjectManagedBy returns a copy of cr with ManagedBy fields projected onto the
+// service-level fields (Manager, ServiceFile, ServiceName, Health, Commands, Sudo, Binary).
+// For crontab, Binary is derived from filepath.Base(cr.Dest) when ManagedBy.ServiceName is empty.
+// Returns cr unchanged when ManagedBy is nil.
+func ProjectManagedBy(cr CueRef) CueRef {
+	if cr.ManagedBy == nil {
+		return cr
+	}
+	m := cr.ManagedBy
+	cr.Manager = m.Manager
+	cr.ServiceFile = m.ServiceFile
+	cr.ServiceName = m.ServiceName
+	cr.Health = m.Health
+	cr.Commands = m.Commands
+	cr.Sudo = cr.Sudo || m.Sudo
+	// Crontab: derive binary name from dest when no explicit service_name override.
+	if m.Manager == "crontab" && cr.Binary == "" && m.ServiceName == "" {
+		cr.Binary = filepath.Base(cr.Dest)
+	}
+	return cr
 }
 
 // KnownNatures is the single authoritative set of valid cue natures.
@@ -111,6 +134,15 @@ func Validate(c *Config) []error {
 			if nature == "service" && cr.Manager == "crontab" && cr.Binary == "" {
 				add("scenario %q cue %q: crontab service requires binary:", scName, cr.Name)
 			}
+			if nature == "binary" && cr.ManagedBy != nil {
+				m := cr.ManagedBy
+				if m.Manager == "systemd" && m.ServiceFile == "" && m.ServiceName == "" {
+					add("scenario %q cue %q: managed_by systemd requires service_file: or service_name:", scName, cr.Name)
+				}
+				if m.Manager == "crontab" && cr.Dest == "" && m.ServiceName == "" {
+					add("scenario %q cue %q: managed_by crontab requires dest: (binary name for crontab entry)", scName, cr.Name)
+				}
+			}
 
 			if cr.Git {
 				if len(cr.Src) > 0 {
@@ -148,6 +180,10 @@ func Validate(c *Config) []error {
 		for _, cr := range sc.Cues {
 			if cr.Nature == "service" {
 				if id := ServiceID(cr); id != "" {
+					svcIDs[id] = true
+				}
+			} else if cr.Nature == "binary" && cr.ManagedBy != nil {
+				if id := ServiceID(ProjectManagedBy(cr)); id != "" {
 					svcIDs[id] = true
 				}
 			}

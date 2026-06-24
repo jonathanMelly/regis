@@ -244,6 +244,34 @@ func (r *CueCompensation) UnmarshalYAML(value *yaml.Node) error {
 	return nil
 }
 
+func (m *ManagedBy) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.ScalarNode {
+		m.Manager = value.Value
+		return nil
+	}
+	type plain struct {
+		Manager     string            `yaml:"manager"`
+		ServiceFile string            `yaml:"service_file"`
+		ServiceName string            `yaml:"service_name"`
+		Health      string            `yaml:"health"`
+		Commands    map[string]string `yaml:"commands"`
+		Sudo        bool              `yaml:"sudo"`
+		Restart     *bool             `yaml:"restart"`
+	}
+	var p plain
+	if err := value.Decode(&p); err != nil {
+		return err
+	}
+	m.Manager = p.Manager
+	m.ServiceFile = p.ServiceFile
+	m.ServiceName = p.ServiceName
+	m.Health = p.Health
+	m.Commands = p.Commands
+	m.Sudo = p.Sudo
+	m.Restart = p.Restart
+	return nil
+}
+
 func (c *CueRef) UnmarshalYAML(value *yaml.Node) error {
 	type plain struct {
 		Scenario        string            `yaml:"scenario"`
@@ -262,7 +290,7 @@ func (c *CueRef) UnmarshalYAML(value *yaml.Node) error {
 		Preserve        StringOrList      `yaml:"preserve"`
 		Mode            string            `yaml:"mode"`
 		If              string            `yaml:"if"`
-		AffectsState  bool              `yaml:"affects_state"`
+		AffectsState    bool              `yaml:"affects_state"`
 		ChangedWhen     WhenExpr          `yaml:"changed_when"`
 		FailedWhen      WhenExpr          `yaml:"failed_when"`
 		ContinueOnError bool              `yaml:"continue_on_error"`
@@ -276,9 +304,10 @@ func (c *CueRef) UnmarshalYAML(value *yaml.Node) error {
 		ServiceFile     string            `yaml:"service_file"`
 		ServiceName     string            `yaml:"service_name"`
 		Health          string            `yaml:"health"`
-		Commands         map[string]string  `yaml:"commands"`
-		Compensation     *CueCompensation   `yaml:"compensation"`
-		CompensationHint string             `yaml:"compensation_hint"`
+		Commands        map[string]string `yaml:"commands"`
+		ManagedBy       *ManagedBy        `yaml:"managed_by"`
+		Compensation    *CueCompensation  `yaml:"compensation"`
+		CompensationHint string           `yaml:"compensation_hint"`
 	}
 	var p plain
 	if err := value.Decode(&p); err != nil {
@@ -320,11 +349,16 @@ func (c *CueRef) UnmarshalYAML(value *yaml.Node) error {
 	c.ServiceName = p.ServiceName
 	c.Health = p.Health
 	c.Commands = p.Commands
+	c.ManagedBy = p.ManagedBy
 	c.Compensation = p.Compensation
 	c.CompensationHint = p.CompensationHint
 	// Infer nature: service when manager: is set and nature is not specified.
 	if c.Nature == "" && c.Manager != "" {
 		c.Nature = "service"
+	}
+	// Infer nature: binary when managed_by: is set with src: present.
+	if c.Nature == "" && c.ManagedBy != nil && len(c.Src) > 0 {
+		c.Nature = "binary"
 	}
 	return nil
 }

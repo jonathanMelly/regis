@@ -53,7 +53,7 @@ The first target is used by default. `--target <name>` selects by name.
 | field | required | description |
 |-------|----------|-------------|
 | `name` | yes | Unique within the scenario |
-| `nature` | yes | binary | config | secret | action | generate | render | pack | service — inferred when manager: is set (→ service) or git: true (→ pack) |
+| `nature` | yes | binary | config | secret | action | generate | render | pack | service — inferred: manager: set → service; managed_by: + src: → binary; git: true → pack |
 | `local` | no | true = run on local machine (action only); default = run on SSH target |
 | `src` | no | Local source path — binary/secret: single file only; config: scalar path, glob string, or YAML list |
 | `git` | no | Use git-tracked files from HEAD commit as the pack source (git ls-tree -r HEAD) — mutually exclusive with src:; .regisignore still applied; nature: pack inferred (pack only) |
@@ -73,12 +73,13 @@ The first target is used by default. `--target <name>` selects by name.
 | `prune` | no | Delete remote files absent from local set (pack default: true — safe because tier-1 uses managed manifest; render default: false; set prune: false to disable for pack) |
 | `local_dest` | no | Local path for rendered output; $ARTIFACT_PATH points here during render and fetch (render only) |
 | `reverse` | no | Shell command run during fetch to transform the downloaded artifact into local source files; $ARTIFACT_PATH = downloaded path (render only) |
-| `manager` | no | systemd | crontab (built-in), or any custom string (e.g. pm2); presence infers nature: service |
+| `manager` | no | systemd | crontab (built-in), or any custom string (e.g. pm2); presence infers nature: service; for custom binaries prefer managed_by: on the binary cue |
 | `binary` | no | Binary filename relative to target.dir (crontab); required for crontab services |
 | `service_file` | no | Local path to systemd unit file; uploaded to /etc/systemd/system/<basename>.service when changed; basename without extension is used as service name |
 | `service_name` | no | Explicit systemd service unit name (e.g. nginx) — required when service_file is absent; used for systemctl is-enabled / deploy post-action |
 | `health` | no | Health-check command (crontab watchdog) |
 | `commands` | no | Override or extend manager commands (start, stop, restart, reload, deploy, status). Template vars: {name}, {binary}, {dir}, {service_file}. Action refs: {restart}, {reload}, etc. expand to the pre-override base command |
+| `managed_by` | no | combine binary upload with service registration in one cue — scalar: managed_by: crontab; struct: managed_by: {manager: systemd, service_file: path/to/unit, sudo: true}; crontab derives binary name from dest:; replaces a separate service cue for custom binaries; nature: binary inferred when src: is also present |
 | `compensation` | no | Per-cue compensation on error — compensation: "cmd" runs a command; compensation: {shell, sudo} for sudo; compensation: defer re-runs the cue shell after all compensations; compensation: interactive drops to operator shell; file natures warn (no automated file restore — use regis state hint) |
 | `compensation_hint` | no | Hint shown by 'regis state hint' for this cue — e.g. DB migration reversal command. Supports {prev_sha} placeholder. |
 
@@ -95,6 +96,8 @@ The first target is used by default. `--target <name>` selects by name.
 ### service cues (nature: service)
 
 Service metadata lives inline in the cue list. Setting `manager:` infers `nature: service`.
+
+**For custom binaries, prefer `managed_by:` on the binary cue** — it combines upload and service registration in one cue and works transparently with `post: restart:<name>` shorthands. A separate `nature: service` cue is mainly useful for system services you don't upload yourself (e.g. nginx, postgresql).
 
 Built-in managers (`systemd`, `crontab`) provide default commands automatically. Any other manager string requires `commands:` to be declared.
 
@@ -221,9 +224,30 @@ compensation: "cmd" or {shell, sudo} — runs a compensation command when on_err
 
 ### binary
 
-Uploads a compiled executable. Change detection: mtime+size fast path, hash fallback.
-Atomic upload: copies to <dest>.new, then mv. Direction: local→remote.
+Uploads a compiled executable. Direction: local→remote.
+Change detection: mtime+size fast path, hash fallback.
+Atomic upload: copies to <dest>.new, then mv.
 compensation: file state is not automatically restored — use `regis state hint` for recovery guidance.
+managed_by: combines binary upload + service registration in one cue (preferred over a separate service cue
+for custom binaries). Scalar or struct form:
+```yaml
+# scalar — crontab or systemd
+- name: app
+src: bin/app
+dest: app
+managed_by: crontab          # nature: binary inferred from src: + managed_by:
+# struct — systemd with unit file
+- name: app
+src: bin/app
+dest: app
+managed_by:
+manager: systemd
+service_file: deploy/app.service   # uploaded to /etc/systemd/system/app.service
+sudo: true
+restart: false             # skip restart here — handled by scenario post:
+```
+After upload the service registration check runs and queues deploy:<name> when not yet installed.
+post: restart:<name> / reload:<name> shorthands resolve managed_by: cues the same as nature: service cues.
 
 ### config
 
@@ -269,7 +293,7 @@ Alternative: shell writes to $ARTIFACT_PATH (injected env var) directly.
 For a folder:      dest ends with / — shell must write files into $ARTIFACT_PATH/ directory.
 local_dest: persistent local path for rendered output; populated by regis fetch.
 reverse: shell run by regis fetch after writing local_dest; $ARTIFACT_PATH = downloaded path.
-Change detection: text diff for UTF-8 content, MD5 for binary.
+Change detection: controlled by diff_mode (binary by default; text for UTF-8 diffs; auto selects by content).
 prune: true (folder mode only) deletes remote files absent from the rendered output.
 Always runs — even during rdiff — so comparisons reflect freshly rendered content.
 Direction: local (rendered) → remote.
@@ -353,7 +377,11 @@ Saver:
   cues:
     - { name: build, nature: action, local: true, cmd: go build … }
     - { name: env,   nature: secret, … }   # changing this triggers the post
-    - { name: bin,   nature: binary, … }   # changing this also triggers the post
+    - name: saver             # managed_by: registers the service — restart:saver resolves here
+      src: bin/saver
+      dest: saver
+      managed_by: crontab
+      # OR: managed_by: {manager: systemd, service_file: deploy/saver.service, sudo: true}
 ```
 
 
@@ -369,7 +397,7 @@ post: restart:saver   # expands to the service's restart command
 post: reload:nginx    # expands to the service's reload command
 ```
 
-Shorthands scan all scenarios for a service cue (nature: service) whose name: matches, call manager.ExpandCommands, and inherit the service cue's sudo: flag. Expanded before deduplication. deploy:<name> is also supported (runs systemctl daemon-reload && systemctl enable <name> for systemd).
+Shorthands scan all scenarios for a service cue (`nature: service` or a binary cue with `managed_by:`) whose `name:` matches, call `manager.ExpandCommands`, and inherit the service cue's `sudo:` flag. Expanded before deduplication. `deploy:<name>` is also supported (runs `systemctl daemon-reload && systemctl enable <name>` for systemd).
 
 ### Service command overrides
 
@@ -384,6 +412,31 @@ MyScenario:
       commands:
         reload: nginx -t && {reload}   # test config, then run original systemctl reload nginx-front
 ```
+
+### managed_by: binary + service in one cue
+
+`managed_by:` is the preferred approach when you deploy a **custom binary** that also needs service management. It combines binary upload and service registration into a single cue — no separate `nature: service` cue required.
+
+```yaml
+Deploy:
+  post: restart:app      # resolved via the managed_by: cue below
+  cues:
+    - name: app
+      src: bin/app
+      dest: app
+      managed_by: crontab   # scalar — nature: binary inferred from src: + managed_by:
+
+    - name: app
+      src: bin/app
+      dest: app
+      managed_by:            # struct — systemd with unit file
+        manager: systemd
+        service_file: deploy/app.service
+        sudo: true
+        restart: false        # skip auto-restart; let scenario post: handle it
+```
+
+The `restart: true` default restarts the service immediately after upload when the binary changed. Set `restart: false` when the scenario `post:` handles the restart (e.g. to ensure config is also applied before restarting).
 
 ### requires vs inline scenario refs
 
@@ -525,7 +578,7 @@ rebuild checkpoint, skipping the broken state.
 | `regis exec "<command>"` | run a raw SSH command on the target (escape hatch) |
 | `regis fetch` | download remote artifacts to local source paths (or .regis/fetched/ with --archive) |
 | `regis hint [state-id]` | show recovery guidance for a state |
-| `regis rtf` | output embedded regis reference (schema, CLI, concepts) — useful as AI context |
+| `regis rtfm` | output embedded regis reference (schema, CLI, concepts) — useful as AI context |
 | `regis run [scenario[,scenario...]]` | run one or more scenarios (omit to run all; also: regis <scenario> directly) |
 | `regis schema` | write the annotated regis.yml schema to regis-schema.yml |
 | `regis score [scenario,...]` | show scenario/cue structure and dependencies |
@@ -559,12 +612,12 @@ scenarios:
   deploy:
     describe: Deploy binary and config
     requires: [build]
-    post: restart:app      # fires once if env or bin changed — even if only one of them did
+    post: restart:app      # fires once if bin or env changed — even if only one of them did
     cues:
-      - name: bin
-        nature: binary
+      - name: app           # managed_by: combines binary upload + service registration in one cue
         src: bin/app
         dest: app
+        managed_by: crontab # scalar: crontab | systemd; struct: {manager: systemd, service_file: deploy/app.service, sudo: true}
       - name: env
         nature: secret
         src: .env.server
@@ -576,10 +629,4 @@ scenarios:
     describe: Full deployment
     cues:
       - { scenario: deploy }
-
-services:
-  - name: app
-    manager: crontab
-    binary: app
-    health: curl -sf http://localhost:8080/health
 ```

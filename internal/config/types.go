@@ -140,7 +140,7 @@ type CueRef struct {
 
 	// Inline cue fields
 	Name            string            // doc: Unique within the scenario
-	Nature          string            // doc: binary | config | secret | action | generate | render | pack | service — inferred when manager: is set (→ service) or git: true (→ pack)
+	Nature          string            // doc: binary | config | secret | action | generate | render | pack | service — inferred: manager: set → service; managed_by: + src: → binary; git: true → pack
 	Local           bool              // doc: true = run on local machine (action only); default = run on SSH target
 	Src             StringOrList      // doc: Local source path — binary/secret: single file only; config: scalar path, glob string, or YAML list
 	Git             bool              // doc: Use git-tracked files from HEAD commit as the pack source (git ls-tree -r HEAD) — mutually exclusive with src:; .regisignore still applied; nature: pack inferred (pack only)
@@ -162,13 +162,30 @@ type CueRef struct {
 	Reverse         string            // doc: Shell command run during fetch to transform the downloaded artifact into local source files; $ARTIFACT_PATH = downloaded path (render only)
 
 	// Service cue fields (nature: service — inferred when Manager is set)
-	Manager     string            // doc: systemd | crontab (built-in), or any custom string (e.g. pm2); presence infers nature: service
+	Manager     string            // doc: systemd | crontab (built-in), or any custom string (e.g. pm2); presence infers nature: service; for custom binaries prefer managed_by: on the binary cue
 	Binary      string            // doc: Binary filename relative to target.dir (crontab); required for crontab services
 	ServiceFile string            // doc: Local path to systemd unit file; uploaded to /etc/systemd/system/<basename>.service when changed; basename without extension is used as service name
 	ServiceName string            // doc: Explicit systemd service unit name (e.g. nginx) — required when service_file is absent; used for systemctl is-enabled / deploy post-action
 	Health      string            // doc: Health-check command (crontab watchdog)
 	Commands    map[string]string // doc: Override or extend manager commands (start, stop, restart, reload, deploy, status). Template vars: {name}, {binary}, {dir}, {service_file}. Action refs: {restart}, {reload}, etc. expand to the pre-override base command
 
+	// managed_by: merges binary upload + service registration into one cue.
+	ManagedBy *ManagedBy // doc: combine binary upload with service registration in one cue — scalar: managed_by: crontab; struct: managed_by: {manager: systemd, service_file: path/to/unit, sudo: true}; crontab derives binary name from dest:; replaces a separate service cue for custom binaries; nature: binary inferred when src: is also present
+
 	Compensation     *CueCompensation  // doc: Per-cue compensation on error — compensation: "cmd" runs a command; compensation: {shell, sudo} for sudo; compensation: defer re-runs the cue shell after all compensations; compensation: interactive drops to operator shell; file natures warn (no automated file restore — use regis state hint)
 	CompensationHint string            // doc: Hint shown by 'regis state hint' for this cue — e.g. DB migration reversal command. Supports {prev_sha} placeholder.
+}
+
+// ManagedBy declares that a binary cue is also a managed service.
+// Scalar form: managed_by: crontab
+// Struct form: managed_by: {manager: systemd, service_file: path/to/unit.service, sudo: true}
+// Custom UnmarshalYAML is in yaml.go.
+type ManagedBy struct {
+	Manager     string            `yaml:"manager"`      // doc: systemd | crontab (built-in), or any custom manager string
+	ServiceFile string            `yaml:"service_file"` // doc: local path to systemd unit file; uploaded to /etc/systemd/system/<basename>.service when changed (systemd only)
+	ServiceName string            `yaml:"service_name"` // doc: explicit service name — required when service_file absent (systemd); overrides dest-derived name (crontab)
+	Health      string            `yaml:"health"`       // doc: health-check command (crontab watchdog)
+	Commands    map[string]string `yaml:"commands"`     // doc: override manager commands (start/stop/restart/reload/deploy); template vars: {name}, {binary}, {dir}, {service_file}; action refs: {restart}, {reload}, etc. expand to pre-override base command
+	Sudo        bool              `yaml:"sudo"`         // doc: run service-lifecycle operations (enable, daemon-reload, crontab install) with sudo
+	Restart     *bool             `yaml:"restart"`      // doc: restart the service after binary upload when changed (default true); set restart: false to skip (e.g. blue-green deployments managed externally)
 }

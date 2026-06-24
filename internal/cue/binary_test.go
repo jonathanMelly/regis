@@ -286,6 +286,238 @@ func TestBinaryExecutor_noConn(t *testing.T) {
 	}
 }
 
+// TestBinaryExecutor_managedBy_autoRestart: managed_by set, binary changed → deploy: then restart: queued.
+func TestBinaryExecutor_managedBy_autoRestart(t *testing.T) {
+	dir := t.TempDir()
+	localPath := dir + "/saver"
+	os.WriteFile(localPath, []byte("new binary"), 0755)
+
+	// Service is already enabled (systemctl is-enabled exits 0).
+	mock := &mockConn{runFunc: func(cmd string) (string, string, int, error) {
+		if strings.Contains(cmd, "is-enabled") {
+			return "enabled", "", 0, nil // service already registered → no deploy: needed
+		}
+		return "", "", 0, nil
+	}}
+
+	ex := cue.NewBinaryExecutor(mock)
+	cr := config.CueRef{
+		Name:      "saver",
+		Nature:    "binary",
+		Src:       config.StringOrList{localPath},
+		Dest:      "/opt/app/saver",
+		ManagedBy: &config.ManagedBy{Manager: "crontab"}, // Restart nil → defaults to true
+	}
+	// Use pre-fetched stats showing file absent so upload triggers.
+	ctx := cue.WithRemoteStats(context.Background(), map[string]cue.RemoteStat{})
+
+	result, err := ex.Execute(ctx, nil, cr, config.Target{Dir: "/opt/app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != cue.StatusChanged {
+		t.Fatalf("want StatusChanged, got %v", result.Status)
+	}
+
+	// Expect exactly one post-action: restart:saver (service was enabled, so no deploy:).
+	if len(result.PostActions) != 1 {
+		t.Fatalf("want 1 post-action (restart:), got %d: %v", len(result.PostActions), result.PostActions)
+	}
+	if result.PostActions[0].Cmd != "restart:saver" {
+		t.Errorf("want restart:saver, got %q", result.PostActions[0].Cmd)
+	}
+}
+
+// TestBinaryExecutor_managedBy_deployThenRestart: service not yet installed → deploy: + restart: both queued.
+func TestBinaryExecutor_managedBy_deployThenRestart(t *testing.T) {
+	dir := t.TempDir()
+	localPath := dir + "/myapp"
+	os.WriteFile(localPath, []byte("new binary"), 0755)
+
+	// Service not enabled (crontab grep exits 1).
+	mock := &mockConn{runFunc: func(cmd string) (string, string, int, error) {
+		if strings.Contains(cmd, "crontab -l") {
+			return "", "", 1, nil // not installed
+		}
+		return "", "", 0, nil
+	}}
+
+	ex := cue.NewBinaryExecutor(mock)
+	cr := config.CueRef{
+		Name:      "myapp",
+		Nature:    "binary",
+		Src:       config.StringOrList{localPath},
+		Dest:      "myapp",
+		ManagedBy: &config.ManagedBy{Manager: "crontab"},
+	}
+	ctx := cue.WithRemoteStats(context.Background(), map[string]cue.RemoteStat{})
+
+	result, err := ex.Execute(ctx, nil, cr, config.Target{Dir: "/opt/app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != cue.StatusChanged {
+		t.Fatalf("want StatusChanged, got %v", result.Status)
+	}
+
+	// Expect deploy: (crontab install) followed by restart:.
+	if len(result.PostActions) != 2 {
+		t.Fatalf("want 2 post-actions (deploy: + restart:), got %d: %v", len(result.PostActions), result.PostActions)
+	}
+	if !strings.HasPrefix(result.PostActions[0].Cmd, "deploy:") {
+		t.Errorf("first post-action must be deploy:, got %q", result.PostActions[0].Cmd)
+	}
+	if !strings.HasPrefix(result.PostActions[1].Cmd, "restart:") {
+		t.Errorf("second post-action must be restart:, got %q", result.PostActions[1].Cmd)
+	}
+}
+
+// TestBinaryExecutor_managedBy_restartFalse: restart: false → no restart: post-action even when changed.
+func TestBinaryExecutor_managedBy_restartFalse(t *testing.T) {
+	dir := t.TempDir()
+	localPath := dir + "/saver"
+	os.WriteFile(localPath, []byte("new binary"), 0755)
+
+	mock := &mockConn{runFunc: func(cmd string) (string, string, int, error) {
+		if strings.Contains(cmd, "crontab -l") {
+			return "", "", 0, nil // service already installed
+		}
+		return "", "", 0, nil
+	}}
+
+	f := false
+	ex := cue.NewBinaryExecutor(mock)
+	cr := config.CueRef{
+		Name:      "saver",
+		Nature:    "binary",
+		Src:       config.StringOrList{localPath},
+		Dest:      "saver",
+		ManagedBy: &config.ManagedBy{Manager: "crontab", Restart: &f},
+	}
+	ctx := cue.WithRemoteStats(context.Background(), map[string]cue.RemoteStat{})
+
+	result, err := ex.Execute(ctx, nil, cr, config.Target{Dir: "/opt/app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != cue.StatusChanged {
+		t.Fatalf("want StatusChanged, got %v", result.Status)
+	}
+
+	for _, pa := range result.PostActions {
+		if strings.HasPrefix(pa.Cmd, "restart:") {
+			t.Errorf("restart: must not be queued when restart: false, got %q", pa.Cmd)
+		}
+	}
+}
+
+// TestBinaryExecutor_managedBy_restartExplicitTrue: restart: true explicit == same as default.
+func TestBinaryExecutor_managedBy_restartExplicitTrue(t *testing.T) {
+	dir := t.TempDir()
+	localPath := dir + "/saver"
+	os.WriteFile(localPath, []byte("new binary"), 0755)
+
+	mock := &mockConn{runFunc: func(cmd string) (string, string, int, error) {
+		if strings.Contains(cmd, "crontab -l") {
+			return "", "", 0, nil // already installed
+		}
+		return "", "", 0, nil
+	}}
+
+	tr := true
+	ex := cue.NewBinaryExecutor(mock)
+	cr := config.CueRef{
+		Name:      "saver",
+		Nature:    "binary",
+		Src:       config.StringOrList{localPath},
+		Dest:      "saver",
+		ManagedBy: &config.ManagedBy{Manager: "crontab", Restart: &tr},
+	}
+	ctx := cue.WithRemoteStats(context.Background(), map[string]cue.RemoteStat{})
+
+	result, err := ex.Execute(ctx, nil, cr, config.Target{Dir: "/opt/app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var hasRestart bool
+	for _, pa := range result.PostActions {
+		if strings.HasPrefix(pa.Cmd, "restart:") {
+			hasRestart = true
+		}
+	}
+	if !hasRestart {
+		t.Errorf("want restart: post-action when restart: true, got %v", result.PostActions)
+	}
+}
+
+// TestBinaryExecutor_managedBy_noRestartWhenEqual: binary unchanged → no restart: even with managed_by.
+func TestBinaryExecutor_managedBy_noRestartWhenEqual(t *testing.T) {
+	dir := t.TempDir()
+	localPath := dir + "/saver"
+	os.WriteFile(localPath, []byte("binary content"), 0755)
+
+	fi, _ := os.Stat(localPath)
+	// Remote stats match exactly → Equal.
+	stats := map[string]cue.RemoteStat{
+		"/opt/app/saver": {Mtime: fi.ModTime(), Size: fi.Size()},
+	}
+	ctx := cue.WithRemoteStats(context.Background(), stats)
+
+	mock := &mockConn{}
+	ex := cue.NewBinaryExecutor(mock)
+	cr := config.CueRef{
+		Name:      "saver",
+		Nature:    "binary",
+		Src:       config.StringOrList{localPath},
+		Dest:      "/opt/app/saver",
+		ManagedBy: &config.ManagedBy{Manager: "crontab"},
+	}
+
+	result, err := ex.Execute(ctx, nil, cr, config.Target{Dir: "/opt/app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != cue.StatusEqual {
+		t.Fatalf("want StatusEqual, got %v", result.Status)
+	}
+	if len(result.PostActions) != 0 {
+		t.Errorf("want no post-actions when equal, got %v", result.PostActions)
+	}
+}
+
+// TestBinaryExecutor_managedBy_checkOnly: check-only mode → StatusChanged but no post-actions.
+func TestBinaryExecutor_managedBy_checkOnly(t *testing.T) {
+	dir := t.TempDir()
+	localPath := dir + "/saver"
+	os.WriteFile(localPath, []byte("new binary"), 0755)
+
+	mock := &mockConn{runFunc: func(cmd string) (string, string, int, error) {
+		return "", "", 0, nil
+	}}
+
+	ex := cue.NewBinaryExecutor(mock)
+	cr := config.CueRef{
+		Name:      "saver",
+		Nature:    "binary",
+		Src:       config.StringOrList{localPath},
+		Dest:      "saver",
+		ManagedBy: &config.ManagedBy{Manager: "crontab"},
+	}
+	ctx := cue.WithCheckOnly(cue.WithRemoteStats(context.Background(), map[string]cue.RemoteStat{}))
+
+	result, err := ex.Execute(ctx, nil, cr, config.Target{Dir: "/opt/app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != cue.StatusChanged {
+		t.Fatalf("want StatusChanged in check-only, got %v", result.Status)
+	}
+	if len(result.PostActions) != 0 {
+		t.Errorf("want no post-actions in check-only mode, got %v", result.PostActions)
+	}
+}
+
 // TestBinaryExecutor_changed: stat differs, hash differs → Changed + post-action + SetMtime called.
 func TestBinaryExecutor_changed(t *testing.T) {
 	dir := t.TempDir()
