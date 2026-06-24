@@ -319,12 +319,15 @@ func TestBinaryExecutor_managedBy_autoRestart(t *testing.T) {
 		t.Fatalf("want StatusChanged, got %v", result.Status)
 	}
 
-	// Expect exactly one post-action: restart:saver (service was enabled, so no deploy:).
-	if len(result.PostActions) != 1 {
-		t.Fatalf("want 1 post-action (restart:), got %d: %v", len(result.PostActions), result.PostActions)
+	// Expect: restart:saver then busy_clear (service was enabled, so no deploy:).
+	if len(result.PostActions) != 2 {
+		t.Fatalf("want 2 post-actions (restart: + busy_clear), got %d: %v", len(result.PostActions), result.PostActions)
 	}
 	if result.PostActions[0].Cmd != "restart:saver" {
 		t.Errorf("want restart:saver, got %q", result.PostActions[0].Cmd)
+	}
+	if !strings.HasPrefix(result.PostActions[1].Cmd, "rm -f ") {
+		t.Errorf("last post-action must be busy_clear (rm -f .busy), got %q", result.PostActions[1].Cmd)
 	}
 }
 
@@ -360,15 +363,18 @@ func TestBinaryExecutor_managedBy_deployThenRestart(t *testing.T) {
 		t.Fatalf("want StatusChanged, got %v", result.Status)
 	}
 
-	// Expect deploy: (crontab install) followed by restart:.
-	if len(result.PostActions) != 2 {
-		t.Fatalf("want 2 post-actions (deploy: + restart:), got %d: %v", len(result.PostActions), result.PostActions)
+	// Expect deploy: (crontab install), restart:, then busy_clear.
+	if len(result.PostActions) != 3 {
+		t.Fatalf("want 3 post-actions (deploy: + restart: + busy_clear), got %d: %v", len(result.PostActions), result.PostActions)
 	}
 	if !strings.HasPrefix(result.PostActions[0].Cmd, "deploy:") {
 		t.Errorf("first post-action must be deploy:, got %q", result.PostActions[0].Cmd)
 	}
 	if !strings.HasPrefix(result.PostActions[1].Cmd, "restart:") {
 		t.Errorf("second post-action must be restart:, got %q", result.PostActions[1].Cmd)
+	}
+	if !strings.HasPrefix(result.PostActions[2].Cmd, "rm -f ") {
+		t.Errorf("third post-action must be busy_clear (rm -f .busy), got %q", result.PostActions[2].Cmd)
 	}
 }
 
@@ -516,6 +522,68 @@ func TestBinaryExecutor_managedBy_checkOnly(t *testing.T) {
 	if len(result.PostActions) != 0 {
 		t.Errorf("want no post-actions in check-only mode, got %v", result.PostActions)
 	}
+}
+
+// TestBinaryExecutor_managedBy_busyProtection: crontab-managed upload sets .busy before
+// the upload and appends busy_clear as the last post-action after restart.
+func TestBinaryExecutor_managedBy_busyProtection(t *testing.T) {
+	dir := t.TempDir()
+	localPath := dir + "/saver"
+	os.WriteFile(localPath, []byte("new binary"), 0755)
+
+	var busySetBeforeUpload bool
+	var uploadCalled bool
+	mock := &mockConn{
+		runFunc: func(cmd string) (string, string, int, error) {
+			if strings.Contains(cmd, "crontab -l") {
+				return "", "", 0, nil // already installed → no deploy:
+			}
+			if strings.Contains(cmd, "touch") && strings.Contains(cmd, ".busy") {
+				if !uploadCalled {
+					busySetBeforeUpload = true
+				}
+			}
+			return "", "", 0, nil
+		},
+		uploadErr: nil,
+	}
+	uploadRecorder := &uploadRecordingConn{mockConn: mock, onUpload: func() { uploadCalled = true }}
+
+	ex := cue.NewBinaryExecutor(uploadRecorder)
+	cr := config.CueRef{
+		Name:      "saver",
+		Nature:    "binary",
+		Src:       config.StringOrList{localPath},
+		Dest:      "saver",
+		ManagedBy: &config.ManagedBy{Manager: "crontab"},
+	}
+	ctx := cue.WithRemoteStats(context.Background(), map[string]cue.RemoteStat{})
+
+	result, err := ex.Execute(ctx, nil, cr, config.Target{Dir: "/opt/app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != cue.StatusChanged {
+		t.Fatalf("want StatusChanged, got %v", result.Status)
+	}
+	if !busySetBeforeUpload {
+		t.Error("touch .busy must be called before the binary upload")
+	}
+	last := result.PostActions[len(result.PostActions)-1]
+	if !strings.HasPrefix(last.Cmd, "rm -f ") || !strings.Contains(last.Cmd, ".busy") {
+		t.Errorf("last post-action must be busy_clear, got %q", last.Cmd)
+	}
+}
+
+// uploadRecordingConn wraps mockConn and fires onUpload when Upload is called.
+type uploadRecordingConn struct {
+	*mockConn
+	onUpload func()
+}
+
+func (u *uploadRecordingConn) Upload(local, remote string, mode fs.FileMode, sudo bool) error {
+	u.onUpload()
+	return u.mockConn.Upload(local, remote, mode, sudo)
 }
 
 // TestBinaryExecutor_changed: stat differs, hash differs → Changed + post-action + SetMtime called.

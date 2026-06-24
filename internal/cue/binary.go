@@ -39,6 +39,7 @@ import (
 	"time"
 
 	"git.disroot.org/jmy/regis/internal/config"
+	"git.disroot.org/jmy/regis/internal/manager"
 )
 
 // JoinRemotePath resolves dest onto dir using the remote host's path separator.
@@ -118,10 +119,15 @@ func (e *BinaryExecutor) Execute(ctx context.Context, conn SSHConn, cr config.Cu
 				restartActions = []PostAction{{Cmd: "restart:" + serviceName(svcCR), Sudo: svcCR.Sudo}}
 			}
 		}
-		combined := make([]PostAction, 0, len(svcResult.PostActions)+len(restartActions)+len(r.PostActions))
+		combined := make([]PostAction, 0, len(svcResult.PostActions)+len(restartActions)+len(r.PostActions)+1)
 		combined = append(combined, svcResult.PostActions...)
 		combined = append(combined, restartActions...)
 		combined = append(combined, r.PostActions...)
+		// Release the .busy lock after restart so the watchdog is unblocked only
+		// once the new binary has been launched and the slot is stable.
+		if cr.ManagedBy.Manager == "crontab" && r.Status == StatusChanged && !IsCheckOnly(ctx) {
+			combined = append(combined, PostAction{Cmd: "rm -f " + manager.BusyPath(target.Dir)})
+		}
 		r.PostActions = combined
 	}
 	return r, nil
@@ -254,6 +260,12 @@ func (e *BinaryExecutor) applyOrChanged(
 		r.Status = StatusChanged
 		r.Elapsed = time.Since(start)
 		return r, nil
+	}
+
+	// Block the crontab watchdog before touching the binary so it cannot
+	// restart the old process mid-upload or race with the explicit restart below.
+	if cr.ManagedBy != nil && cr.ManagedBy.Manager == "crontab" {
+		e.conn.Run("touch " + manager.BusyPath(target.Dir)) //nolint:errcheck
 	}
 
 	useSudo := cr.Sudo || target.Sudo

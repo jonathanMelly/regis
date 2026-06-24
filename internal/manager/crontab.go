@@ -32,12 +32,20 @@ func crontabDefaults(cr config.CueRef, tgt config.Target) map[string]string {
 			`. %s/.env && nohup %s/%s >> %s/%s.log 2>&1 < /dev/null &`,
 			dir, dir, bin, dir, bin,
 		),
-		"stop":    fmt.Sprintf("pkill -f %s/%s", dir, bin),
-		"restart": fmt.Sprintf("pkill -f %s/%s 2>/dev/null; sleep 1; . %s/.env && nohup %s/%s >> %s/%s.log 2>&1 < /dev/null &", dir, bin, dir, dir, bin, dir, bin),
-		"reload":  fmt.Sprintf("pkill -HUP -f %s/%s", dir, bin),
-		"status":  health,
-		"enable":  "echo 'crontab: already enabled via crontab deploy'",
-		"disable": fmt.Sprintf("crontab -l | grep -v %s | crontab -", bin),
+		"stop": fmt.Sprintf("pkill -f %s/%s", dir, bin),
+		// Wait up to 5 s for the old process to exit before starting the new one.
+		// Using a pgrep loop instead of a fixed sleep avoids the race where the
+		// old process is still alive when the replacement binary is launched.
+		"restart": fmt.Sprintf(
+			"pkill -f %s/%s 2>/dev/null; for _i in 1 2 3 4 5 6 7 8 9 10; do pgrep -f %s/%s >/dev/null 2>&1 || break; sleep 0.5; done; . %s/.env && nohup %s/%s >> %s/%s.log 2>&1 </dev/null &",
+			dir, bin, dir, bin, dir, dir, bin, dir, bin,
+		),
+		"reload":     fmt.Sprintf("pkill -HUP -f %s/%s", dir, bin),
+		"status":     health,
+		"enable":     "echo 'crontab: already enabled via crontab deploy'",
+		"disable":    fmt.Sprintf("crontab -l | grep -v %s | crontab -", bin),
+		"busy_set":   fmt.Sprintf("touch %s", BusyPath(dir)),
+		"busy_clear": fmt.Sprintf("rm -f %s", BusyPath(dir)),
 	}
 }
 
