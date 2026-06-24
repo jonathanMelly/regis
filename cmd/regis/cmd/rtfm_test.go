@@ -16,7 +16,7 @@ func TestRTFCommand_OutputsMarkdown(t *testing.T) {
 	var buf bytes.Buffer
 	root.SetOut(&buf)
 	root.SetErr(&buf)
-	root.SetArgs([]string{"rtf", "--stdout"})
+	root.SetArgs([]string{"rtfm", "--stdout"})
 
 	err := root.Execute()
 	if err != nil {
@@ -34,7 +34,7 @@ func TestRTFCommand_ContainsSchemaSection(t *testing.T) {
 	var buf bytes.Buffer
 	root.SetOut(&buf)
 	root.SetErr(&buf)
-	root.SetArgs([]string{"rtf", "--stdout"})
+	root.SetArgs([]string{"rtfm", "--stdout"})
 
 	err := root.Execute()
 	if err != nil {
@@ -54,7 +54,7 @@ func TestRTFCommand_ContainsExamples(t *testing.T) {
 	var buf bytes.Buffer
 	root.SetOut(&buf)
 	root.SetErr(&buf)
-	root.SetArgs([]string{"rtf", "--stdout"})
+	root.SetArgs([]string{"rtfm", "--stdout"})
 
 	err := root.Execute()
 	if err != nil {
@@ -72,7 +72,7 @@ func TestRTFCommand_StdoutFlag(t *testing.T) {
 	var buf bytes.Buffer
 	root.SetOut(&buf)
 	root.SetErr(&buf)
-	root.SetArgs([]string{"rtf", "--stdout"})
+	root.SetArgs([]string{"rtfm", "--stdout"})
 
 	err := root.Execute()
 	if err != nil {
@@ -101,7 +101,7 @@ func TestRTFCommand_OutputFlag(t *testing.T) {
 	var buf bytes.Buffer
 	root.SetOut(&buf)
 	root.SetErr(&buf)
-	root.SetArgs([]string{"rtf", "--output", outFile})
+	root.SetArgs([]string{"rtfm", "--output", outFile})
 
 	err = root.Execute()
 	if err != nil {
@@ -122,13 +122,13 @@ func TestRTFCommand_OutputFlag(t *testing.T) {
 
 func TestRTFCommand_DefaultOutputFile(t *testing.T) {
 	dir := t.TempDir()
-	outFile := filepath.Join(dir, "regis-rtf.md")
+	outFile := filepath.Join(dir, "regis-rtfm.md")
 
 	root := cmd.NewRootCommand("dev")
 	var buf bytes.Buffer
 	root.SetOut(&buf)
 	root.SetErr(&buf)
-	root.SetArgs([]string{"rtf", "--output", outFile})
+	root.SetArgs([]string{"rtfm", "--output", outFile})
 
 	err := root.Execute()
 	if err != nil {
@@ -137,10 +137,10 @@ func TestRTFCommand_DefaultOutputFile(t *testing.T) {
 
 	content, err := os.ReadFile(outFile)
 	if err != nil {
-		t.Fatalf("expected output file regis-rtf.md to exist: %v", err)
+		t.Fatalf("expected output file regis-rtfm.md to exist: %v", err)
 	}
 	if len(content) == 0 {
-		t.Error("expected regis-rtf.md to have content, got empty")
+		t.Error("expected regis-rtfm.md to have content, got empty")
 	}
 }
 

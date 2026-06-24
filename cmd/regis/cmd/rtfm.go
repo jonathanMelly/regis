@@ -9,21 +9,21 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newRTFCommand(gf *GlobalFlags) *cobra.Command {
+func newRTFMCommand(gf *GlobalFlags) *cobra.Command {
 	var stdout bool
 	var output string
 
 	c := &cobra.Command{
-		Use:   "rtf",
+		Use:   "rtfm",
 		Short: "output embedded regis reference (schema, CLI, concepts) — useful as AI context",
-		Long: `regis rtf writes the full regis reference to regis-rtf.md.
+		Long: `regis rtfm writes the full regis reference to regis-rtfm.md.
 
 The reference covers the complete schema, all nature types, CLI flags, and
 key concepts. Useful as AI context when generating or debugging a regis.yml.
 
 Workflow:
-  regis rtf
-  # Give regis-rtf.md + your project files to an AI assistant`,
+  regis rtfm
+  # Give regis-rtfm.md + your project files to an AI assistant`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if stdout {
 				_, err := cmd.OutOrStdout().Write(regis.RTFContext)
@@ -31,7 +31,7 @@ Workflow:
 			}
 			outPath := output
 			if outPath == "" {
-				outPath = "regis-rtf.md"
+				outPath = "regis-rtfm.md"
 			}
 			if err := os.WriteFile(outPath, regis.RTFContext, 0644); err != nil {
 				return err
@@ -41,6 +41,6 @@ Workflow:
 		},
 	}
 	c.Flags().BoolVar(&stdout, "stdout", false, "write to stdout instead of a file")
-	c.Flags().StringVarP(&output, "output", "o", "", "output file path (default: regis-rtf.md)")
+	c.Flags().StringVarP(&output, "output", "o", "", "output file path (default: regis-rtfm.md)")
 	return c
 }

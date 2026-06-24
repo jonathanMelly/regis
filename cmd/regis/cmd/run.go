@@ -24,7 +24,7 @@ import (
 var reservedNames = map[string]bool{
 	"config": true, "init": true, "score": true, "show": true,
 	"fetch": true, "release": true, "releases": true, "service": true,
-	"ssh": true, "exec": true, "env": true, "rtf": true,
+	"ssh": true, "exec": true, "env": true, "rtfm": true,
 }
 
 // populateRemoteFiles runs a single find on the target and stores the file set
