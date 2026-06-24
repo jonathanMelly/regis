@@ -13,21 +13,30 @@ func crontabDefaults(cr config.CueRef, tgt config.Target) map[string]string {
 	if health == "" {
 		health = "true"
 	}
+	interval := cr.Interval
+	if interval == "" {
+		interval = "*/3 * * * *"
+	}
 
 	rebootEntry := fmt.Sprintf(
 		"@reboot . %s/.env && nohup %s/%s >> %s/%s.log 2>&1 < /dev/null &",
 		dir, dir, bin, dir, bin,
 	)
 	watchdogEntry := fmt.Sprintf(
-		`*/1 * * * * [ -f %s/.busy ] || %s || (. %s/.env && nohup %s/%s >> %s/%s.log 2>&1 < /dev/null &)`,
-		dir, health, dir, dir, bin, dir, bin,
+		`%s [ -f %s/.busy ] || %s || (. %s/.env && nohup %s/%s >> %s/%s.log 2>&1 < /dev/null &)`,
+		interval, dir, health, dir, dir, bin, dir, bin,
 	)
 
 	return map[string]string{
+		// Replace any existing entries for this binary before adding fresh ones.
+		// grep -vF strips both the reboot and watchdog lines (both contain dir/bin),
+		// so re-running deploy always installs the current entry text.
 		"deploy": fmt.Sprintf(
-			`(crontab -l 2>/dev/null; echo %q; echo %q) | crontab -`,
-			rebootEntry, watchdogEntry,
+			`(crontab -l 2>/dev/null | grep -vF %q; echo %q; echo %q) | crontab -`,
+			dir+"/"+bin, rebootEntry, watchdogEntry,
 		),
+		// watchdog_line is the exact cron line used by checkEnabled to detect staleness.
+		"watchdog_line": watchdogEntry,
 		"start": fmt.Sprintf(
 			`. %s/.env && nohup %s/%s >> %s/%s.log 2>&1 < /dev/null &`,
 			dir, dir, bin, dir, bin,

@@ -166,7 +166,8 @@ type CueRef struct {
 	Binary      string            // doc: Binary filename relative to target.dir (crontab); required for crontab services
 	ServiceFile string            // doc: Local path to systemd unit file; uploaded to /etc/systemd/system/<basename>.service when changed; basename without extension is used as service name
 	ServiceName string            // doc: Explicit systemd service unit name (e.g. nginx) — required when service_file is absent; used for systemctl is-enabled / deploy post-action
-	Health      string            // doc: Health-check command (crontab watchdog)
+	Health      string            // doc: Probe command for managers without built-in supervision (crontab: used as watchdog check and status command; ignored by systemd/pm2 which supervise natively)
+	Interval    string            // doc: Crontab watchdog schedule — cron expression for the auto-restart check (default "*/3 * * * *"); ignored by managers with built-in supervision
 	Commands    map[string]string // doc: Override or extend manager commands (start, stop, restart, reload, deploy, status). Template vars: {name}, {binary}, {dir}, {service_file}. Action refs: {restart}, {reload}, etc. expand to the pre-override base command
 
 	// managed_by: merges binary upload + service registration into one cue.
@@ -184,7 +185,8 @@ type ManagedBy struct {
 	Manager     string            `yaml:"manager"`      // doc: systemd | crontab (built-in), or any custom manager string
 	ServiceFile string            `yaml:"service_file"` // doc: local path to systemd unit file; uploaded to /etc/systemd/system/<basename>.service when changed (systemd only)
 	ServiceName string            `yaml:"service_name"` // doc: explicit service name — required when service_file absent (systemd); overrides dest-derived name (crontab)
-	Health      string            `yaml:"health"`       // doc: health-check command (crontab watchdog)
+	Health      string            `yaml:"health"`       // doc: probe command for managers without built-in supervision (crontab: watchdog check + status command; ignored by systemd/pm2)
+	Interval    string            `yaml:"interval"`     // doc: crontab watchdog schedule — cron expression (default "*/3 * * * *"); ignored by managers with built-in supervision
 	Commands    map[string]string `yaml:"commands"`     // doc: override manager commands (start/stop/restart/reload/deploy); template vars: {name}, {binary}, {dir}, {service_file}; action refs: {restart}, {reload}, etc. expand to pre-override base command
 	Sudo        bool              `yaml:"sudo"`         // doc: run service-lifecycle operations (enable, daemon-reload, crontab install) with sudo
 	Restart     *bool             `yaml:"restart"`      // doc: restart the service after binary upload when changed (default true); set restart: false to skip (e.g. blue-green deployments managed externally)

@@ -25,7 +25,7 @@ func ServiceID(cr CueRef) string {
 }
 
 // ProjectManagedBy returns a copy of cr with ManagedBy fields projected onto the
-// service-level fields (Manager, ServiceFile, ServiceName, Health, Commands, Sudo, Binary).
+// service-level fields (Manager, ServiceFile, ServiceName, Health, Interval, Commands, Sudo, Binary).
 // For crontab, Binary is derived from filepath.Base(cr.Dest) when ManagedBy.ServiceName is empty.
 // Returns cr unchanged when ManagedBy is nil.
 func ProjectManagedBy(cr CueRef) CueRef {
@@ -37,6 +37,7 @@ func ProjectManagedBy(cr CueRef) CueRef {
 	cr.ServiceFile = m.ServiceFile
 	cr.ServiceName = m.ServiceName
 	cr.Health = m.Health
+	cr.Interval = m.Interval
 	cr.Commands = m.Commands
 	cr.Sudo = cr.Sudo || m.Sudo
 	// Crontab: derive binary name from dest when no explicit service_name override.
@@ -218,13 +219,44 @@ func Validate(c *Config) []error {
 	return errs
 }
 
+// supervisedManagers is the set of managers with built-in process supervision.
+// health: and interval: are no-ops on these and a warning is emitted when set.
+var supervisedManagers = map[string]bool{
+	"systemd": true,
+	"pm2":     true,
+}
+
 // ValidateWarnings returns non-blocking advisory warnings for a validated config.
 // Call after Validate succeeds.
 func ValidateWarnings(c *Config) []string {
 	var warns []string
 	for scName, sc := range c.Scenarios {
 		for _, cr := range sc.Cues {
-			if cr.ScenarioRef != "" || cr.Compensation == nil || !cr.Compensation.Enabled {
+			if cr.ScenarioRef != "" {
+				continue
+			}
+
+			// Warn when health: or interval: is set on a manager with built-in supervision.
+			mgr := cr.Manager
+			if cr.ManagedBy != nil {
+				mgr = cr.ManagedBy.Manager
+			}
+			if supervisedManagers[mgr] {
+				if cr.Health != "" || (cr.ManagedBy != nil && cr.ManagedBy.Health != "") {
+					warns = append(warns, fmt.Sprintf(
+						"scenario %q cue %q: health: has no effect on %q (built-in supervision) — remove it or switch to crontab",
+						scName, cr.Name, mgr,
+					))
+				}
+				if cr.Interval != "" || (cr.ManagedBy != nil && cr.ManagedBy.Interval != "") {
+					warns = append(warns, fmt.Sprintf(
+						"scenario %q cue %q: interval: has no effect on %q (built-in supervision) — remove it or switch to crontab",
+						scName, cr.Name, mgr,
+					))
+				}
+			}
+
+			if cr.Compensation == nil || !cr.Compensation.Enabled {
 				continue
 			}
 			if fileNatures[cr.Nature] {

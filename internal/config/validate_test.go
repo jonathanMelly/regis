@@ -276,6 +276,131 @@ func TestValidateWarnings_actionNatureCompensation_noWarning(t *testing.T) {
 	}
 }
 
+// ── health:/interval: on supervised managers ──────────────────────────────────
+
+func TestValidateWarnings_healthOnSystemd_warns(t *testing.T) {
+	c := minimalCfg()
+	c.Scenarios["svc"] = config.Scenario{Cues: []config.CueRef{
+		{Name: "app", Nature: "service", Manager: "systemd", ServiceName: "app",
+			Health: "curl -sf http://localhost:8080/health"},
+	}}
+	warns := config.ValidateWarnings(c)
+	if len(warns) == 0 {
+		t.Error("expected warning for health: on systemd")
+	}
+	if !strings.Contains(warns[0], "health:") || !strings.Contains(warns[0], "systemd") {
+		t.Errorf("unexpected warning text: %s", warns[0])
+	}
+}
+
+func TestValidateWarnings_intervalOnSystemd_warns(t *testing.T) {
+	c := minimalCfg()
+	c.Scenarios["svc"] = config.Scenario{Cues: []config.CueRef{
+		{Name: "app", Nature: "service", Manager: "systemd", ServiceName: "app",
+			Interval: "*/5 * * * *"},
+	}}
+	warns := config.ValidateWarnings(c)
+	if len(warns) == 0 {
+		t.Error("expected warning for interval: on systemd")
+	}
+	if !strings.Contains(warns[0], "interval:") || !strings.Contains(warns[0], "systemd") {
+		t.Errorf("unexpected warning text: %s", warns[0])
+	}
+}
+
+func TestValidateWarnings_healthOnPm2_warns(t *testing.T) {
+	c := minimalCfg()
+	c.Scenarios["svc"] = config.Scenario{Cues: []config.CueRef{
+		{Name: "api", Nature: "service", Manager: "pm2", Binary: "api",
+			Health: "pm2 describe api"},
+	}}
+	warns := config.ValidateWarnings(c)
+	if len(warns) == 0 {
+		t.Error("expected warning for health: on pm2")
+	}
+}
+
+func TestValidateWarnings_healthOnCrontab_noWarning(t *testing.T) {
+	c := minimalCfg()
+	c.Scenarios["svc"] = config.Scenario{Cues: []config.CueRef{
+		{Name: "saver", Nature: "service", Manager: "crontab", Binary: "saver",
+			Health: "curl -sf http://localhost:8080/health > /dev/null"},
+	}}
+	warns := config.ValidateWarnings(c)
+	for _, w := range warns {
+		if strings.Contains(w, "health:") {
+			t.Errorf("health: on crontab must not warn, got: %s", w)
+		}
+	}
+}
+
+func TestValidateWarnings_intervalOnCrontab_noWarning(t *testing.T) {
+	c := minimalCfg()
+	c.Scenarios["svc"] = config.Scenario{Cues: []config.CueRef{
+		{Name: "saver", Nature: "service", Manager: "crontab", Binary: "saver",
+			Interval: "*/5 * * * *"},
+	}}
+	warns := config.ValidateWarnings(c)
+	for _, w := range warns {
+		if strings.Contains(w, "interval:") {
+			t.Errorf("interval: on crontab must not warn, got: %s", w)
+		}
+	}
+}
+
+func TestValidateWarnings_healthOnManagedBySystemd_warns(t *testing.T) {
+	c := minimalCfg()
+	c.Scenarios["svc"] = config.Scenario{Cues: []config.CueRef{
+		{
+			Name:      "app",
+			Nature:    "binary",
+			Src:       config.StringOrList{"bin/app"},
+			Dest:      "app",
+			ManagedBy: &config.ManagedBy{Manager: "systemd", Health: "curl -sf http://localhost/health"},
+		},
+	}}
+	warns := config.ValidateWarnings(c)
+	if len(warns) == 0 {
+		t.Error("expected warning for health: in managed_by: systemd")
+	}
+}
+
+func TestValidateWarnings_intervalOnManagedBySystemd_warns(t *testing.T) {
+	c := minimalCfg()
+	c.Scenarios["svc"] = config.Scenario{Cues: []config.CueRef{
+		{
+			Name:      "app",
+			Nature:    "binary",
+			Src:       config.StringOrList{"bin/app"},
+			Dest:      "app",
+			ManagedBy: &config.ManagedBy{Manager: "systemd", Interval: "*/1 * * * *"},
+		},
+	}}
+	warns := config.ValidateWarnings(c)
+	if len(warns) == 0 {
+		t.Error("expected warning for interval: in managed_by: systemd")
+	}
+}
+
+func TestValidateWarnings_healthOnManagedByCrontab_noWarning(t *testing.T) {
+	c := minimalCfg()
+	c.Scenarios["svc"] = config.Scenario{Cues: []config.CueRef{
+		{
+			Name:      "saver",
+			Nature:    "binary",
+			Src:       config.StringOrList{"bin/saver"},
+			Dest:      "saver",
+			ManagedBy: &config.ManagedBy{Manager: "crontab", Health: "curl -sf http://localhost:8080/health > /dev/null"},
+		},
+	}}
+	warns := config.ValidateWarnings(c)
+	for _, w := range warns {
+		if strings.Contains(w, "health:") {
+			t.Errorf("health: on crontab must not warn, got: %s", w)
+		}
+	}
+}
+
 func TestValidate_unknownRequires(t *testing.T) {
 	c := minimalCfg()
 	c.Scenarios["deploy"] = config.Scenario{

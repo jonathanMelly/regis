@@ -57,7 +57,8 @@ scenarios:
         binary: ""                            # Binary filename relative to target.dir (crontab); required for crontab services
         service_file: ""                      # Local path to systemd unit file; uploaded to /etc/systemd/system/<basename>.service when changed; basename without extension is used as service name
         service_name: ""                      # Explicit systemd service unit name (e.g. nginx) — required when service_file is absent; used for systemctl is-enabled / deploy post-action
-        health: ""                            # Health-check command (crontab watchdog)
+        health: ""                            # Probe command for managers without built-in supervision (crontab: used as watchdog check and status command; ignored by systemd/pm2 which supervise natively)
+        interval: "*/3 * * * *"               # Crontab watchdog schedule — cron expression for the auto-restart check
         commands: {}                          # Override or extend manager commands (start, stop, restart, reload, deploy, status). Template vars: {name}, {binary}, {dir}, {service_file}. Action refs: {restart}, {reload}, etc. expand to the pre-override base command
         # ── managed_by: binary + service in one cue (preferred for custom binaries) ──
         managed_by: ""                        # combine binary upload with service registration in one cue — scalar: managed_by: crontab; struct: managed_by: {manager: systemd, service_file: path/to/unit, sudo: true}; crontab derives binary name from dest:; replaces a separate service cue for custom binaries; nature: binary inferred when src: is also present

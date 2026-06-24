@@ -77,7 +77,8 @@ The first target is used by default. `--target <name>` selects by name.
 | `binary` | no | Binary filename relative to target.dir (crontab); required for crontab services |
 | `service_file` | no | Local path to systemd unit file; uploaded to /etc/systemd/system/<basename>.service when changed; basename without extension is used as service name |
 | `service_name` | no | Explicit systemd service unit name (e.g. nginx) — required when service_file is absent; used for systemctl is-enabled / deploy post-action |
-| `health` | no | Health-check command (crontab watchdog) |
+| `health` | no | Probe command for managers without built-in supervision (crontab: used as watchdog check and status command; ignored by systemd/pm2 which supervise natively) |
+| `interval` | no | Crontab watchdog schedule — cron expression for the auto-restart check (default "*/3 * * * *"); ignored by managers with built-in supervision |
 | `commands` | no | Override or extend manager commands (start, stop, restart, reload, deploy, status). Template vars: {name}, {binary}, {dir}, {service_file}. Action refs: {restart}, {reload}, etc. expand to the pre-override base command |
 | `managed_by` | no | combine binary upload with service registration in one cue — scalar: managed_by: crontab; struct: managed_by: {manager: systemd, service_file: path/to/unit, sudo: true}; crontab derives binary name from dest:; replaces a separate service cue for custom binaries; nature: binary inferred when src: is also present |
 | `compensation` | no | Per-cue compensation on error — compensation: "cmd" runs a command; compensation: {shell, sudo} for sudo; compensation: defer re-runs the cue shell after all compensations; compensation: interactive drops to operator shell; file natures warn (no automated file restore — use regis state hint) |

@@ -254,6 +254,7 @@ func (m *ManagedBy) UnmarshalYAML(value *yaml.Node) error {
 		ServiceFile string            `yaml:"service_file"`
 		ServiceName string            `yaml:"service_name"`
 		Health      string            `yaml:"health"`
+		Interval    string            `yaml:"interval"`
 		Commands    map[string]string `yaml:"commands"`
 		Sudo        bool              `yaml:"sudo"`
 		Restart     *bool             `yaml:"restart"`
@@ -266,6 +267,7 @@ func (m *ManagedBy) UnmarshalYAML(value *yaml.Node) error {
 	m.ServiceFile = p.ServiceFile
 	m.ServiceName = p.ServiceName
 	m.Health = p.Health
+	m.Interval = p.Interval
 	m.Commands = p.Commands
 	m.Sudo = p.Sudo
 	m.Restart = p.Restart
@@ -304,6 +306,7 @@ func (c *CueRef) UnmarshalYAML(value *yaml.Node) error {
 		ServiceFile     string            `yaml:"service_file"`
 		ServiceName     string            `yaml:"service_name"`
 		Health          string            `yaml:"health"`
+		Interval        string            `yaml:"interval"`
 		Commands        map[string]string `yaml:"commands"`
 		ManagedBy       *ManagedBy        `yaml:"managed_by"`
 		Compensation    *CueCompensation  `yaml:"compensation"`
@@ -348,6 +351,7 @@ func (c *CueRef) UnmarshalYAML(value *yaml.Node) error {
 	c.ServiceFile = p.ServiceFile
 	c.ServiceName = p.ServiceName
 	c.Health = p.Health
+	c.Interval = p.Interval
 	c.Commands = p.Commands
 	c.ManagedBy = p.ManagedBy
 	c.Compensation = p.Compensation

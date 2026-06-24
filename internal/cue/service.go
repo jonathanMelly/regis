@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"git.disroot.org/jmy/regis/internal/config"
+	"git.disroot.org/jmy/regis/internal/manager"
 )
 
 // ServiceExecutor handles nature: service cues.
@@ -164,16 +165,19 @@ func (e *ServiceExecutor) checkEnabled(cr config.CueRef, tgt config.Target) bool
 		return err == nil && code == 0
 
 	case "crontab":
+		// Compare the exact watchdog line so a changed restart/health command
+		// is detected as stale and triggers a crontab replace via deploy:.
+		cmds := manager.ExpandCommands(cr, tgt)
+		if line := cmds["watchdog_line"]; line != "" {
+			_, _, code, err := e.conn.Run(fmt.Sprintf("crontab -l 2>/dev/null | grep -qF %q", line))
+			return err == nil && code == 0
+		}
+		// Fallback for custom managers that override watchdog_line away.
 		binary := cr.Binary
 		if binary == "" {
 			binary = cr.Name
 		}
-		var pattern string
-		if tgt.Dir != "" {
-			pattern = tgt.Dir + "/" + binary
-		} else {
-			pattern = binary
-		}
+		pattern := tgt.Dir + "/" + binary
 		_, _, code, err := e.conn.Run(fmt.Sprintf("crontab -l 2>/dev/null | grep -qF %q", pattern))
 		return err == nil && code == 0
 

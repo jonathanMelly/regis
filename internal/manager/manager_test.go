@@ -2,7 +2,9 @@
 package manager_test
 
 import (
+	"strings"
 	"testing"
+
 	"git.disroot.org/jmy/regis/internal/config"
 	"git.disroot.org/jmy/regis/internal/manager"
 )
@@ -50,6 +52,58 @@ func TestCrontabCommands_defaults(t *testing.T) {
 	}
 	if cmds["status"] == "" {
 		t.Error("crontab status must be defined")
+	}
+}
+
+// TestCrontabDeploy_idempotentReplace verifies that the deploy command strips existing
+// entries for the binary via grep -vF before adding fresh ones, and that watchdog_line
+// contains the exact text checkEnabled greps for.
+func TestCrontabDeploy_idempotentReplace(t *testing.T) {
+	cr := config.CueRef{
+		Name:    "saver",
+		Nature:  "service",
+		Manager: "crontab",
+		Binary:  "saver",
+		Health:  "curl -sf http://localhost:8080/health > /dev/null",
+	}
+	tgt := config.Target{Dir: "/opt/custom/saver"}
+	cmds := manager.ExpandCommands(cr, tgt)
+
+	deploy := cmds["deploy"]
+	watchdogLine := cmds["watchdog_line"]
+
+	// deploy must strip old entries for this binary before adding new ones.
+	stripPattern := "/opt/custom/saver/saver"
+	if !strings.Contains(deploy, "grep -vF") {
+		t.Errorf("deploy must use grep -vF to strip old entries; got:\n%s", deploy)
+	}
+	if !strings.Contains(deploy, stripPattern) {
+		t.Errorf("deploy must strip %q; got:\n%s", stripPattern, deploy)
+	}
+
+	// watchdog_line must contain the busy-file guard, the health check, and the binary path.
+	for _, want := range []string{
+		manager.BusyPath(tgt.Dir),
+		"curl -sf http://localhost:8080/health",
+		"/opt/custom/saver/saver",
+	} {
+		if !strings.Contains(watchdogLine, want) {
+			t.Errorf("watchdog_line missing %q; got:\n%s", want, watchdogLine)
+		}
+	}
+
+	// deploy must embed the exact watchdog_line so it can be detected by checkEnabled.
+	if !strings.Contains(deploy, watchdogLine) {
+		t.Errorf("deploy must contain the exact watchdog_line so checkEnabled can verify it;\ndeploy=%s\nwatchdog_line=%s", deploy, watchdogLine)
+	}
+
+	// Simulate replacing an existing crontab that has the old .deploying convention.
+	oldCrontab := "@reboot . /opt/custom/saver/.env && nohup /opt/custom/saver/saver >> /opt/custom/saver/saver.log 2>&1 < /dev/null &\n" +
+		"*/1 * * * * [ -f /opt/custom/saver/.deploying ] || curl -sf http://localhost:8080/health > /dev/null || (. /opt/custom/saver/.env && nohup /opt/custom/saver/saver >> /opt/custom/saver/saver.log 2>&1 < /dev/null &)\n"
+	for _, line := range strings.Split(strings.TrimSpace(oldCrontab), "\n") {
+		if !strings.Contains(line, stripPattern) {
+			t.Errorf("line not matched by grep -vF %q (would survive deploy): %s", stripPattern, line)
+		}
 	}
 }
 
