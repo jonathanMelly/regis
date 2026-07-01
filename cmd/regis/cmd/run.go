@@ -344,21 +344,21 @@ func newRunCommand(gf *GlobalFlags) *cobra.Command {
 					return res.Results, res.Elapsed, runErr
 				}
 
-				var phase1, phase2 tui.PhaseFunc
+				var phase1, phase2 runner.PhaseFunc
 				var hasPhase2 bool
 				if gf.RunWithoutCheck {
-					phase1 = tui.PhaseFunc{Label: "run", Fn: runFn}
+					phase1 = runner.PhaseFunc{Label: "run", Fn: runFn}
 				} else {
 					checkOpts := runOpts
 					checkOpts.CheckOnly = true
-					phase1 = tui.PhaseFunc{Label: "check", Fn: func(liveCtx context.Context) ([]cue.Result, time.Duration, error) {
+					phase1 = runner.PhaseFunc{Label: "check", Fn: func(liveCtx context.Context) ([]cue.Result, time.Duration, error) {
 						res, runErr := runner.Run(liveCtx, cfg, scenarioNames, tgt, checkOpts, dispatch, func(cue.Result) {})
 						if res == nil {
 							return nil, 0, runErr
 						}
 						return res.Results, res.Elapsed, runErr
 					}}
-					phase2 = tui.PhaseFunc{
+					phase2 = runner.PhaseFunc{
 						Label: "run",
 						Fn:    runFn,
 						OnOverrideSet: func(override string) {
@@ -384,7 +384,7 @@ func newRunCommand(gf *GlobalFlags) *cobra.Command {
 				// Level2: TUI.
 				if level >= output.Level2 {
 					spinner.Stop()
-					var p2 *tui.PhaseFunc
+					var p2 *runner.PhaseFunc
 					if hasPhase2 {
 						p2 = &phase2
 					}

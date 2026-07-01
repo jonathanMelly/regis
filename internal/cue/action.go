@@ -6,11 +6,14 @@
 package cue
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"git.disroot.org/jmy/regis/internal/config"
@@ -50,8 +53,13 @@ func (e *ActionExecutor) Execute(ctx context.Context, _ SSHConn, cr config.CueRe
 	}
 
 	useSudo := !cr.Local && (cr.Sudo || target.Sudo)
+	onLine := OutputLineFrom(ctx)
 	if cr.Local {
-		stdout, stderr, exitCode, runErr = runLocal(ctx, cr.Shell, cr.Env)
+		if onLine != nil {
+			stdout, stderr, exitCode, runErr = runLocalStream(ctx, cr.Shell, cr.Env, onLine)
+		} else {
+			stdout, stderr, exitCode, runErr = runLocal(ctx, cr.Shell, cr.Env)
+		}
 	} else if useSudo {
 		cmd := remoteShell
 		if len(cr.Env) > 0 {
@@ -62,9 +70,27 @@ func (e *ActionExecutor) Execute(ctx context.Context, _ SSHConn, cr config.CueRe
 			sb.WriteString(cmd)
 			cmd = sb.String()
 		}
-		stdout, stderr, exitCode, runErr = e.conn.RunSudo(cmd)
+		if onLine != nil {
+			stdout, stderr, exitCode, runErr = e.conn.RunStream("sudo "+cmd, onLine)
+		} else {
+			stdout, stderr, exitCode, runErr = e.conn.RunSudo(cmd)
+		}
 	} else {
-		stdout, stderr, exitCode, runErr = e.conn.RunWithEnv(remoteShell, cr.Env)
+		if onLine != nil {
+			// Build env prefix same as RunWithEnv.
+			fullCmd := remoteShell
+			if len(cr.Env) > 0 {
+				var sb strings.Builder
+				for k, v := range cr.Env {
+					fmt.Fprintf(&sb, "export %s=%q; ", k, v)
+				}
+				sb.WriteString(fullCmd)
+				fullCmd = sb.String()
+			}
+			stdout, stderr, exitCode, runErr = e.conn.RunStream(fullCmd, onLine)
+		} else {
+			stdout, stderr, exitCode, runErr = e.conn.RunWithEnv(remoteShell, cr.Env)
+		}
 	}
 
 	if runErr != nil {
@@ -175,6 +201,67 @@ func runLocal(ctx context.Context, shell string, env map[string]string) (stdout,
 	cmd.Stderr = &errBuf
 
 	if runErr := cmd.Run(); runErr != nil {
+		if exitErr, ok := runErr.(*exec.ExitError); ok {
+			return outBuf.String(), errBuf.String(), exitErr.ExitCode(), nil
+		}
+		return outBuf.String(), errBuf.String(), -1, runErr
+	}
+	return outBuf.String(), errBuf.String(), 0, nil
+}
+
+// runLocalStream runs shell with streaming output via onLine.
+func runLocalStream(ctx context.Context, shell string, env map[string]string, onLine func(string, bool)) (stdout, stderr string, exitCode int, err error) {
+	var args []string
+	if os.PathSeparator == '\\' {
+		args = []string{"cmd", "/C", expandEnvRefs(shell, env)}
+	} else {
+		args = []string{"sh", "-c", shell}
+	}
+	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+	if dir := LocalDirFrom(ctx); dir != "" {
+		cmd.Dir = dir
+	}
+	if len(env) > 0 {
+		cmd.Env = os.Environ()
+		for k, v := range env {
+			cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
+		}
+	}
+
+	outR, outW := io.Pipe()
+	errR, errW := io.Pipe()
+	cmd.Stdout = outW
+	cmd.Stderr = errW
+
+	var outBuf, errBuf strings.Builder
+	var wg sync.WaitGroup
+
+	scan := func(r io.Reader, isStderr bool, buf *strings.Builder) {
+		defer wg.Done()
+		sc := bufio.NewScanner(r)
+		for sc.Scan() {
+			line := sc.Text()
+			buf.WriteString(line + "\n")
+			onLine(line, isStderr)
+		}
+	}
+
+	wg.Add(2)
+	go scan(outR, false, &outBuf)
+	go scan(errR, true, &errBuf)
+
+	if runErr := cmd.Start(); runErr != nil {
+		outW.Close()
+		errW.Close()
+		wg.Wait()
+		return "", "", -1, runErr
+	}
+	runErr := cmd.Wait()
+	outW.Close()
+	errW.Close()
+	wg.Wait()
+
+	if runErr != nil {
 		if exitErr, ok := runErr.(*exec.ExitError); ok {
 			return outBuf.String(), errBuf.String(), exitErr.ExitCode(), nil
 		}

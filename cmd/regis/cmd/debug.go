@@ -84,6 +84,13 @@ func (d *debugConn) Exists(remotePath string) (bool, error) {
 	return ok, err
 }
 
+func (d *debugConn) RunStream(cmd string, onLine func(string, bool)) (string, string, int, error) {
+	fmt.Fprintf(os.Stderr, "[debug] runstream: %s\n", cmd)
+	stdout, stderr, code, err := d.inner.RunStream(cmd, onLine)
+	debugResult(stdout, stderr, code, err)
+	return stdout, stderr, code, err
+}
+
 func (d *debugConn) PathSep() string { return d.inner.PathSep() }
 
 func debugResult(stdout, stderr string, code int, err error) {

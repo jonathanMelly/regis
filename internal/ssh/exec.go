@@ -2,9 +2,12 @@
 package ssh
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
+	"io"
 	"strings"
+	"sync"
 
 	gossh "golang.org/x/crypto/ssh"
 )
@@ -33,6 +36,51 @@ func (c *Conn) Run(cmd string) (stdout, stderr string, exitCode int, err error) 
 		return stdout, stderr, -1, runErr
 	}
 	return stdout, stderr, 0, nil
+}
+
+// RunStream executes cmd and calls onLine for each line of output as it arrives.
+// Returns accumulated stdout/stderr identical to Run.
+func (c *Conn) RunStream(cmd string, onLine func(line string, isStderr bool)) (stdout, stderr string, exitCode int, err error) {
+	sess, err := c.client.NewSession()
+	if err != nil {
+		return "", "", -1, fmt.Errorf("new session: %w", err)
+	}
+	defer sess.Close()
+
+	outR, outW := io.Pipe()
+	errR, errW := io.Pipe()
+	sess.Stdout = outW
+	sess.Stderr = errW
+
+	var outBuf, errBuf strings.Builder
+	var wg sync.WaitGroup
+
+	scanLines := func(r io.Reader, isStderr bool, buf *strings.Builder) {
+		defer wg.Done()
+		sc := bufio.NewScanner(r)
+		for sc.Scan() {
+			line := sc.Text()
+			buf.WriteString(line + "\n")
+			onLine(line, isStderr)
+		}
+	}
+
+	wg.Add(2)
+	go scanLines(outR, false, &outBuf)
+	go scanLines(errR, true, &errBuf)
+
+	runErr := sess.Run(cmd)
+	outW.Close()
+	errW.Close()
+	wg.Wait()
+
+	if runErr != nil {
+		if exitErr, ok := runErr.(*gossh.ExitError); ok {
+			return outBuf.String(), errBuf.String(), exitErr.ExitStatus(), nil
+		}
+		return outBuf.String(), errBuf.String(), -1, runErr
+	}
+	return outBuf.String(), errBuf.String(), 0, nil
 }
 
 // RunSudo prepends "sudo " to cmd.

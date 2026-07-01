@@ -244,6 +244,24 @@ func ApplyStepFrom(ctx context.Context) func(scenario, cue string) {
 	return fn
 }
 
+type outputLineKey struct{}
+
+// WithOutputLine stores a callback invoked by action executors for each line of
+// stdout/stderr as it is produced during apply phase. isStderr distinguishes streams.
+//
+// Event protocol — all progress events flow through these context callbacks.
+// Any UI (TUI, web, JSON logger) wires these callbacks to its own messaging system.
+// The runner and executors never import UI packages.
+func WithOutputLine(ctx context.Context, fn func(line string, isStderr bool)) context.Context {
+	return context.WithValue(ctx, outputLineKey{}, fn)
+}
+
+// OutputLineFrom returns the output-line callback stored in ctx, or nil if absent.
+func OutputLineFrom(ctx context.Context) func(string, bool) {
+	fn, _ := ctx.Value(outputLineKey{}).(func(string, bool))
+	return fn
+}
+
 type applyResultKey struct{}
 
 // WithApplyResult stores a callback invoked by the pipeline after each step

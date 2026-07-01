@@ -3,6 +3,7 @@ package output
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -262,6 +263,21 @@ func RenderTable(results []cue.Result, target string, total time.Duration, deplo
 // showDiff controls whether text diffs are included.
 func CueInfoLines(r cue.Result, showDiff bool, minfo *ManifestInfo) []string {
 	var lines []string
+
+	// Multi-file cues (pack, render, multi-src config): list individual files.
+	if len(r.LocalArtifacts) > 0 {
+		prefix := r.CueName + "/"
+		var relPaths []string
+		for key := range r.LocalArtifacts {
+			rel := strings.TrimPrefix(key, prefix)
+			relPaths = append(relPaths, rel)
+		}
+		sort.Strings(relPaths)
+		lines = append(lines, fmt.Sprintf("  %s: %d files", r.CueName, len(relPaths)))
+		for _, p := range relPaths {
+			lines = append(lines, "    "+p)
+		}
+	}
 
 	// Manifest drift — always shown when detected.
 	if r.ManifestDrift {

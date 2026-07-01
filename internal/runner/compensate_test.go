@@ -54,6 +54,9 @@ func (m *mockSSHConn) RunWithEnv(_ string, _ map[string]string) (string, string,
 func (m *mockSSHConn) Download(_ string) ([]byte, error) { return nil, nil }
 func (m *mockSSHConn) Exists(_ string) (bool, error)     { return false, nil }
 func (m *mockSSHConn) PathSep() string                   { return "/" }
+func (m *mockSSHConn) RunStream(_ string, _ func(string, bool)) (string, string, int, error) {
+	return "", "", 0, nil
+}
 
 var _ cue.SSHConn = (*mockSSHConn)(nil)
 

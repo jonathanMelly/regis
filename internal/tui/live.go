@@ -4,13 +4,16 @@ package tui
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"git.disroot.org/jmy/regis/internal/cue"
 	"git.disroot.org/jmy/regis/internal/output"
+	"git.disroot.org/jmy/regis/internal/runner"
 )
 
 // ── ANSI helpers ─────────────────────────────────────────────────────────────
@@ -38,10 +41,13 @@ type liveEntry struct {
 	result      cue.Result
 	fileScanned int
 	fileTotal   int
+	currentFile string // filename being uploaded (from liveFileProgressMsg)
 	// apply phase
 	applying    bool       // stage 2 is executing this step right now
 	applyDone   bool       // stage 2 result received
 	applyResult cue.Result
+	outputLines []string   // ring buffer of last 8 output lines
+	pinnedOpen  bool       // user pressed space → keeps output visible after done
 }
 
 type livePrePhaseMsg    struct{ steps []cue.StepInfo }
@@ -55,14 +61,16 @@ type liveApplyStepMsg struct {
 	cueName      string
 }
 type liveApplyResultMsg struct{ result cue.Result }
-// PhaseFunc associates a display label with a phase function.
-// The label (e.g. "check", "run") appears in the title/status line and its
-// first letter becomes the key that advances to the next phase.
-type PhaseFunc struct {
-	Label         string
-	Fn            func(context.Context) ([]cue.Result, time.Duration, error)
-	OnOverrideSet func(overrideOnError string) // optional; called with the on_error toggle state before Fn runs
+type liveOutputLineMsg struct {
+	scenarioName string
+	cueName      string
+	line         string
+	isStderr     bool
 }
+
+// PhaseFunc is an alias for runner.PhaseFunc kept for backward compatibility.
+// Use runner.PhaseFunc directly in new code.
+type PhaseFunc = runner.PhaseFunc
 
 // confirmDecision is sent on the confirm channel when the user proceeds or cancels.
 type confirmDecision struct {
@@ -131,14 +139,15 @@ type phaseVisItem struct {
 }
 
 type phaseScenario struct {
-	name        string
-	label       string
-	results     []cue.Result
-	expanded    bool
-	cueExpanded []bool     // whether tab content is visible
-	activeTab   []tabID    // which tab is active
-	detailLines [][]string // per-cue: CueInfoLines output (renamed details)
-	execLines   [][]string // per-cue: CueExecLines output
+	name             string
+	label            string
+	results          []cue.Result
+	expanded         bool
+	cueExpanded      []bool     // whether tab content is visible
+	activeTab        []tabID    // which tab is active
+	detailLines      [][]string // per-cue: CueInfoLines output (renamed details)
+	execLines        [][]string // per-cue: CueExecLines output
+	cueContentOffset []int      // per-cue scroll offset within active tab content
 }
 
 // ── model ────────────────────────────────────────────────────────────────────
@@ -168,6 +177,12 @@ type phaseModel struct {
 	spinFrame        int
 	startedAt        time.Time
 	currentApplyDesc string // "scenario / cue  →  cmd" shown during apply stage
+	liveScroll       int    // scroll offset into treeLines
+	liveCursor       int    // -1 = auto-follow, >=0 = user-selected entry index
+	liveAutoScroll   bool   // true once auto-scroll is active (apply phase started)
+
+	// browse content-scroll
+	contentFocus bool // true = ↑/↓ scrolls item tab content, not the list
 
 	// deploy gate (isRun=true, two-phase)
 	confirmCh chan confirmDecision // non-nil when waiting for user to press 'r' before deploying
@@ -204,6 +219,9 @@ func (m phaseModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.liveEntries[i] = liveEntry{info: s}
 		}
 		m.checking = true
+		m.liveCursor = -1
+		m.liveScroll = 0
+		m.liveAutoScroll = false
 		m.startedAt = time.Now()
 		return m, liveTick()
 
@@ -219,13 +237,29 @@ func (m phaseModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case liveFileProgressMsg:
 		cueName := msg.fullName
+		filePart := ""
 		if idx := strings.LastIndex(msg.fullName, " > "); idx >= 0 {
+			filePart = msg.fullName[:idx]
 			cueName = msg.fullName[idx+3:]
 		}
 		for i, e := range m.liveEntries {
 			if !e.done && e.info.Name == cueName {
 				m.liveEntries[i].fileScanned = msg.scanned
 				m.liveEntries[i].fileTotal = msg.total
+				m.liveEntries[i].currentFile = filePart
+				break
+			}
+		}
+		return m, nil
+
+	case liveOutputLineMsg:
+		for i, e := range m.liveEntries {
+			if e.info.ScenarioName == msg.scenarioName && e.info.Name == msg.cueName {
+				const maxLines = 8
+				m.liveEntries[i].outputLines = append(m.liveEntries[i].outputLines, msg.line)
+				if len(m.liveEntries[i].outputLines) > maxLines {
+					m.liveEntries[i].outputLines = m.liveEntries[i].outputLines[len(m.liveEntries[i].outputLines)-maxLines:]
+				}
 				break
 			}
 		}
@@ -249,6 +283,11 @@ func (m phaseModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				} else {
 					m.currentApplyDesc = desc + " / " + msg.cueName
 				}
+				// Auto-scroll: if user hasn't manually moved cursor, follow this entry.
+				if m.liveCursor < 0 {
+					m.liveScroll = i
+				}
+				m.liveAutoScroll = true
 				break
 			}
 		}
@@ -304,9 +343,30 @@ func (m phaseModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		if m.checking {
-			if msg.Type == tea.KeyCtrlC || msg.String() == "q" {
+			switch {
+			case msg.Type == tea.KeyCtrlC || msg.String() == "q":
 				m.quitting = true
 				return m, tea.Quit
+			case msg.Type == tea.KeyUp:
+				if m.liveCursor < 0 {
+					m.liveCursor = m.liveScroll
+				}
+				if m.liveCursor > 0 {
+					m.liveCursor--
+					m.liveScroll = m.liveCursor
+				}
+			case msg.Type == tea.KeyDown:
+				if m.liveCursor < 0 {
+					m.liveCursor = m.liveScroll
+				}
+				if m.liveCursor < len(m.liveEntries)-1 {
+					m.liveCursor++
+					m.liveScroll = m.liveCursor
+				}
+			case msg.String() == " ":
+				if m.liveCursor >= 0 && m.liveCursor < len(m.liveEntries) {
+					m.liveEntries[m.liveCursor].pinnedOpen = !m.liveEntries[m.liveCursor].pinnedOpen
+				}
 			}
 			return m, nil
 		}
@@ -328,7 +388,14 @@ func (m phaseModel) titleLine() string {
 	if ts.IsZero() {
 		ts = time.Now()
 	}
-	line := fmt.Sprintf("%-5s  %s   %s", m.phaseLabel, m.target, ts.Format("02.01.2006 15:04:05"))
+	// Browse mode: show completed phase as [✓] and next phase as [ ] if pending.
+	checkMark := colorize("[✓]", ansiGreen)
+	phaseStr := m.phaseLabel + " " + checkMark
+	if m.nextPhaseLabel != "" {
+		pendingMark := colorize("[ ]", ansiDim)
+		phaseStr += "  →  " + m.nextPhaseLabel + " " + pendingMark
+	}
+	line := phaseStr + "   " + m.target + "   " + ts.Format("02.01.2006 15:04:05")
 	if m.phaseLabel == "check" && m.gitSHA != "" {
 		line += "   " + m.gitSHA
 	}
@@ -367,21 +434,51 @@ func resultSymbol(r cue.Result) string {
 	return "?"
 }
 
+// phaseStrip renders the "check [✓] → run [●]" header.
+func (m phaseModel) phaseStrip() string {
+	var parts []string
+	// Completed phase (if nextPhaseLabel is current phase, then phaseLabel was previous).
+	if m.nextPhaseLabel != "" && m.phaseLabel != "" {
+		// We're in check phase showing next label; check is the current.
+	}
+	renderPhase := func(label string, done bool, active bool) string {
+		var bracket string
+		switch {
+		case done:
+			bracket = colorize("[✓]", ansiGreen)
+		case active:
+			bracket = colorize("["+spinFrames[m.spinFrame]+"]", ansiYellow)
+		default:
+			bracket = colorize("[ ]", ansiDim)
+		}
+		return label + " " + bracket
+	}
+	// During live check phase: phaseLabel=current, nextPhaseLabel=upcoming.
+	parts = append(parts, renderPhase(m.phaseLabel, false, true))
+	if m.nextPhaseLabel != "" {
+		parts = append(parts, renderPhase(m.nextPhaseLabel, false, false))
+	}
+	ts := m.startedAt
+	if ts.IsZero() {
+		ts = time.Now()
+	}
+	line := strings.Join(parts, "  →  ")
+	line += "   " + m.target + "   " + ts.Format("15:04:05")
+	if m.phaseLabel == "check" && m.gitSHA != "" {
+		line += "   " + m.gitSHA
+	}
+	return line
+}
+
 func (m phaseModel) viewLive() string {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "%s\n\n", m.titleLine())
+	fmt.Fprintf(&sb, "%s\n\n", m.phaseStrip())
 
 	checked := 0
 	for _, e := range m.liveEntries {
 		if e.done {
 			checked++
 		}
-	}
-
-	reserved := 4
-	maxLines := m.height - reserved
-	if maxLines < 1 {
-		maxLines = 1
 	}
 
 	type liveGroup struct {
@@ -404,16 +501,40 @@ func (m phaseModel) viewLive() string {
 		}
 	}
 
-	// Reserve an extra line for the apply-zone when in apply phase.
-	applyPhase := m.currentApplyDesc != ""
-	if applyPhase {
-		maxLines--
+	// Build flat line list; each entry may produce multiple lines (output tail).
+	type treeLine struct {
+		entryIdx int // which liveEntry owns this line (-1 = group header)
+		text     string
+	}
+	var treeLines []treeLine
+
+	maxWidth := m.width - 8
+	if maxWidth < 20 {
+		maxWidth = 20
 	}
 
-	var treeLines []string
+	appendOutputLines := func(e liveEntry) {
+		showOutput := e.applying || e.pinnedOpen || (e.applyDone && e.applyResult.Status == cue.StatusFailed)
+		if !showOutput {
+			return
+		}
+		tail := e.outputLines
+		if len(tail) > 5 {
+			tail = tail[len(tail)-5:]
+		}
+		for _, l := range tail {
+			if len([]rune(l)) > maxWidth {
+				runes := []rune(l)
+				l = string(runes[:maxWidth]) + "…"
+			}
+			treeLines = append(treeLines, treeLine{entryIdx: -1, text: colorize("      "+l, ansiDim)})
+		}
+	}
+
 	for _, g := range groups {
 		if len(g.indices) == 1 {
-			e := m.liveEntries[g.indices[0]]
+			i := g.indices[0]
+			e := m.liveEntries[i]
 			sym := liveSymbol(e, m.spinFrame)
 			name := e.info.Name
 			if e.done {
@@ -430,14 +551,18 @@ func (m phaseModel) viewLive() string {
 			if (e.done || e.applyDone) && activeResult.FileTotal > 0 {
 				line += fmt.Sprintf("  ~%d/%d", activeResult.FileChanged, activeResult.FileTotal)
 			} else if !e.done && e.fileTotal > 0 {
-				line += "  " + liveProgressBar(e.fileScanned, e.fileTotal, 16)
+				bar := liveProgressBar(e.fileScanned, e.fileTotal, 16)
+				if e.currentFile != "" {
+					bar += "  " + filepath.Base(e.currentFile)
+				}
+				line += "  " + bar
 			}
 			if (e.done || e.applyDone) && len(activeResult.Warnings) > 0 {
 				line += "  ⚠"
 			}
-			treeLines = append(treeLines, line)
+			treeLines = append(treeLines, treeLine{entryIdx: i, text: line})
+			appendOutputLines(e)
 		} else {
-			// Compute group header status considering both check and apply states.
 			allSettled := true
 			anyApplying := false
 			changed, deployed, failed := 0, 0, 0
@@ -468,12 +593,11 @@ func (m phaseModel) viewLive() string {
 			case deployed > 0:
 				info = colorize(fmt.Sprintf("%d deployed", deployed), ansiGreen)
 			case changed > 0:
-				// Pre-check done, apply not started yet.
 				info = colorize(fmt.Sprintf("%d changed", changed), ansiGreen)
 			default:
 				info = colorize("all in sync", ansiDim)
 			}
-			treeLines = append(treeLines, fmt.Sprintf("● %s   %s", g.label, info))
+			treeLines = append(treeLines, treeLine{entryIdx: -1, text: fmt.Sprintf("● %s   %s", g.label, info)})
 			for _, i := range g.indices {
 				e := m.liveEntries[i]
 				sym := liveSymbol(e, m.spinFrame)
@@ -489,33 +613,78 @@ func (m phaseModel) viewLive() string {
 				if (e.done || e.applyDone) && activeResult.FileTotal > 0 {
 					line += fmt.Sprintf("  ~%d/%d", activeResult.FileChanged, activeResult.FileTotal)
 				} else if !e.done && e.fileTotal > 0 {
-					line += "  " + liveProgressBar(e.fileScanned, e.fileTotal, 16)
+					bar := liveProgressBar(e.fileScanned, e.fileTotal, 16)
+					if e.currentFile != "" {
+						bar += "  " + filepath.Base(e.currentFile)
+					}
+					line += "  " + bar
 				}
 				if (e.done || e.applyDone) && len(activeResult.Warnings) > 0 {
 					line += "  ⚠"
 				}
-				treeLines = append(treeLines, line)
+				treeLines = append(treeLines, treeLine{entryIdx: i, text: line})
+				appendOutputLines(e)
 			}
 		}
 	}
+
+	// Compute display window.
+	// reserved: title(1) + blank(1) + rule(1) + footer(1) = 4
+	reserved := 4
+	maxLines := m.height - reserved
 	if maxLines < 1 {
 		maxLines = 1
 	}
-	if len(treeLines) > maxLines {
-		treeLines = treeLines[:maxLines]
-	}
-	for _, l := range treeLines {
-		sb.WriteString(l + "\n")
+
+	// Auto-scroll: find the line index of the applying entry and centre on it.
+	if m.liveAutoScroll && m.liveCursor < 0 {
+		// Find first treeLines entry belonging to the applying liveEntry.
+		applyingIdx := -1
+		for _, e := range m.liveEntries {
+			if e.applying {
+				for ti, tl := range treeLines {
+					if tl.entryIdx == applyingIdx {
+						_ = ti
+					}
+				}
+				break
+			}
+		}
+		// Find the liveEntry index of the applying step.
+		for i, e := range m.liveEntries {
+			if e.applying {
+				applyingIdx = i
+				break
+			}
+		}
+		if applyingIdx >= 0 {
+			// Find the treeLine for this entry.
+			for ti, tl := range treeLines {
+				if tl.entryIdx == applyingIdx {
+					scroll := ti - maxLines/2
+					if scroll < 0 {
+						scroll = 0
+					}
+					m.liveScroll = scroll
+					break
+				}
+			}
+		}
 	}
 
-	// Apply zone: show currently executing step + command.
-	if applyPhase {
-		desc := m.currentApplyDesc
-		if len([]rune(desc)) > m.width-4 {
-			runes := []rune(desc)
-			desc = string(runes[:m.width-7]) + "..."
-		}
-		fmt.Fprintf(&sb, "%s▸ %s%s\n", ansiDim, desc, ansiReset)
+	scroll := m.liveScroll
+	if scroll > len(treeLines)-maxLines {
+		scroll = len(treeLines) - maxLines
+	}
+	if scroll < 0 {
+		scroll = 0
+	}
+	end := scroll + maxLines
+	if end > len(treeLines) {
+		end = len(treeLines)
+	}
+	for _, tl := range treeLines[scroll:end] {
+		sb.WriteString(tl.text + "\n")
 	}
 
 	ruleWidth := m.width - 1
@@ -526,7 +695,6 @@ func (m phaseModel) viewLive() string {
 	if len(m.liveEntries) == 0 {
 		fmt.Fprintf(&sb, "%s %s…\n", phaseGerund(m.phaseLabel), m.target)
 	} else {
-		// Count apply progress when in apply phase.
 		applyDone, applyTotal := 0, 0
 		for _, e := range m.liveEntries {
 			if e.applyDone || e.applying || e.result.Status != cue.StatusEqual {
@@ -597,6 +765,8 @@ func (m phaseModel) viewBrowse() string {
 		fmt.Fprintf(&sb, "\n%sFAILED: %s%s  q quit\n", ansiRed, m.errMsg, ansiReset)
 	} else if m.confirming {
 		fmt.Fprintf(&sb, "\n%s? [y/N]\n", m.nextPhaseLabel)
+	} else if m.contentFocus {
+		fmt.Fprintf(&sb, "\n↑↓ scroll   →← tab   ← back   esc back   q quit\n")
 	} else {
 		var skippedHint string
 		if m.hideSkipped {
@@ -619,7 +789,6 @@ func (m phaseModel) viewBrowse() string {
 		}
 		var runHint string
 		if m.runBlockMsg != "" {
-			// Summarise the block reason on one line (first line only, with marker).
 			firstLine := m.runBlockMsg
 			if idx := strings.IndexByte(m.runBlockMsg, '\n'); idx >= 0 {
 				firstLine = m.runBlockMsg[:idx]
@@ -628,7 +797,11 @@ func (m phaseModel) viewBrowse() string {
 		} else if m.confirmCh != nil && m.nextPhaseLabel != "" {
 			runHint = fmt.Sprintf("  %c %s", rune(m.nextPhaseLabel[0]), m.nextPhaseLabel)
 		}
-		fmt.Fprintf(&sb, "\n↑↓ navigate  →← tab/collapse  +/- all  / search%s%s%s  q quit\n", skippedHint, compensateHint, runHint)
+		var contentHint string
+		if m.cursorHasOverflow() {
+			contentHint = "  enter content-scroll"
+		}
+		fmt.Fprintf(&sb, "\n↑↓ navigate  →← tab/collapse  +/- all  / search%s%s%s%s  q quit\n", skippedHint, compensateHint, contentHint, runHint)
 	}
 	return sb.String()
 }
@@ -753,14 +926,15 @@ func newPhaseModel(
 			execL[j] = output.CueExecLines(r, verbose)
 		}
 		scenarios[i] = phaseScenario{
-			name:        g.name,
-			label:       g.label,
-			results:     g.rows,
-			expanded:    false,
-			cueExpanded: make([]bool, n),
-			activeTab:   make([]tabID, n),
-			detailLines: detailL,
-			execLines:   execL,
+			name:             g.name,
+			label:            g.label,
+			results:          g.rows,
+			expanded:         false,
+			cueExpanded:      make([]bool, n),
+			activeTab:        make([]tabID, n),
+			detailLines:      detailL,
+			execLines:        execL,
+			cueContentOffset: make([]int, n),
 		}
 	}
 
@@ -843,20 +1017,43 @@ func (m phaseModel) buildVisible() []phaseVisItem {
 // cursorLine is the index of the first line belonging to the cursor item.
 func (m phaseModel) renderListAndCursorLine() (lines []string, cursorLine int) {
 	cursorLine = 0
+	// Determine maxVisible for content scroll: half the list height.
+	reserved := 6
+	if m.searchMode {
+		reserved = 7
+	}
+	listHeight := m.height - reserved
+	if listHeight < 1 {
+		listHeight = 1
+	}
+	maxVisible := listHeight / 2
+	if maxVisible < 3 {
+		maxVisible = 3
+	}
+
 	for vi, item := range m.visible {
 		isCursor := vi == m.cursor
 		if isCursor {
 			cursorLine = len(lines)
 		}
-		itemLines := m.renderItem(item, isCursor)
+		contentOffset := 0
+		if isCursor && m.contentFocus && item.kind != phaseKindScenario {
+			si, ci := item.scenarioIdx, item.cueIdx
+			if ci >= 0 && ci < len(m.scenarios[si].cueContentOffset) {
+				contentOffset = m.scenarios[si].cueContentOffset[ci]
+			}
+		}
+		itemLines := m.renderItem(item, isCursor, contentOffset, maxVisible)
 		lines = append(lines, itemLines...)
 	}
 	return
 }
 
 // renderItem returns the display lines for a single visible item.
+// contentOffset is the scroll offset into active tab content (only for cursor item in content mode).
+// maxVisible is the max content lines to show at once.
 // An expanded cue row includes its active tab content lines beneath it.
-func (m phaseModel) renderItem(item phaseVisItem, isCursor bool) []string {
+func (m phaseModel) renderItem(item phaseVisItem, isCursor bool, contentOffset, maxVisible int) []string {
 	si, ci := item.scenarioIdx, item.cueIdx
 
 	var header string
@@ -950,8 +1147,38 @@ func (m phaseModel) renderItem(item phaseVisItem, isCursor bool) []string {
 	if item.kind != phaseKindScenario {
 		sc := m.scenarios[si]
 		if sc.cueExpanded[ci] {
-			for _, l := range activeTabLines(sc, ci) {
-				lines = append(lines, "      "+l)
+			all := activeTabLines(sc, ci)
+			total := len(all)
+			if isCursor && m.contentFocus && total > maxVisible {
+				// Clamp offset.
+				if contentOffset < 0 {
+					contentOffset = 0
+				}
+				if contentOffset > total-maxVisible {
+					contentOffset = total - maxVisible
+				}
+				if contentOffset > 0 {
+					lines = append(lines, colorize(fmt.Sprintf("      ↑ %d above", contentOffset), ansiDim))
+				}
+				visible := all[contentOffset:]
+				if len(visible) > maxVisible {
+					visible = visible[:maxVisible]
+				}
+				for _, l := range visible {
+					lines = append(lines, "      "+l)
+				}
+				remaining := total - contentOffset - len(visible)
+				if remaining > 0 {
+					lines = append(lines, colorize(fmt.Sprintf("      ↓ %d more   ↑↓ scroll   esc back", remaining), ansiDim))
+				}
+			} else {
+				for _, l := range all {
+					lines = append(lines, "      "+l)
+				}
+				// Show scroll hint when content overflows and not yet in content mode.
+				if isCursor && !m.contentFocus && total > maxVisible {
+					lines = append(lines, colorize("      ↓ more   enter content-scroll", ansiDim))
+				}
 			}
 		}
 	}
@@ -1039,13 +1266,21 @@ func (m phaseModel) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m phaseModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
-	case tea.KeyUp:
-		if m.cursor > 0 {
-			m.cursor--
+	case tea.KeyUp, tea.KeyCtrlU:
+		if m.contentFocus {
+			m = m.scrollContent(-1)
+		} else {
+			if m.cursor > 0 {
+				m.cursor--
+			}
 		}
-	case tea.KeyDown:
-		if m.cursor < len(m.visible)-1 {
-			m.cursor++
+	case tea.KeyDown, tea.KeyCtrlD:
+		if m.contentFocus {
+			m = m.scrollContent(1)
+		} else {
+			if m.cursor < len(m.visible)-1 {
+				m.cursor++
+			}
 		}
 	case tea.KeyCtrlP:
 		if m.cursor > 0 {
@@ -1055,10 +1290,34 @@ func (m phaseModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.cursor < len(m.visible)-1 {
 			m.cursor++
 		}
-	case tea.KeyRight, tea.KeyTab, tea.KeyEnter:
+	case tea.KeyEscape:
+		if m.contentFocus {
+			m.contentFocus = false
+			return m, nil
+		}
+	case tea.KeyEnter:
+		// Toggle content focus if expanded item has overflowing content.
+		if m.cursorHasOverflow() {
+			m.contentFocus = !m.contentFocus
+			return m, nil
+		}
 		m = m.actionRight()
+		return m, nil
+	case tea.KeyTab:
+		m = m.actionRight()
+	case tea.KeyRight:
+		// In content mode, → switches to next tab and resets offset.
+		if m.contentFocus {
+			m = m.actionRightTabOnly()
+		} else {
+			m = m.actionRight()
+		}
 	case tea.KeyLeft, tea.KeyBackspace:
-		m = m.actionLeft()
+		if m.contentFocus {
+			m = m.actionLeftContentMode()
+		} else {
+			m = m.actionLeft()
+		}
 	case tea.KeyShiftTab:
 		m = m.jumpPrevScenario()
 	case tea.KeyCtrlC:
@@ -1073,11 +1332,15 @@ func (m phaseModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyRunes:
 		switch msg.String() {
 		case "k":
-			if m.cursor > 0 {
+			if m.contentFocus {
+				m = m.scrollContent(-1)
+			} else if m.cursor > 0 {
 				m.cursor--
 			}
 		case "j":
-			if m.cursor < len(m.visible)-1 {
+			if m.contentFocus {
+				m = m.scrollContent(1)
+			} else if m.cursor < len(m.visible)-1 {
 				m.cursor++
 			}
 		case "c", "-":
@@ -1217,6 +1480,131 @@ func (m phaseModel) actionLeft() phaseModel {
 	}
 	m.visible = m.buildVisible()
 	m.cursor = clamp(m.cursor, 0, len(m.visible)-1)
+	return m
+}
+
+// cursorMaxVisible returns the maxVisible lines for content scroll.
+func (m phaseModel) cursorMaxVisible() int {
+	reserved := 6
+	if m.searchMode {
+		reserved = 7
+	}
+	listHeight := m.height - reserved
+	if listHeight < 1 {
+		listHeight = 1
+	}
+	mv := listHeight / 2
+	if mv < 3 {
+		mv = 3
+	}
+	return mv
+}
+
+// cursorHasOverflow reports whether the cursor item is expanded and has more
+// content lines than maxVisible.
+func (m phaseModel) cursorHasOverflow() bool {
+	if len(m.visible) == 0 {
+		return false
+	}
+	item := m.visible[m.cursor]
+	if item.kind == phaseKindScenario || item.cueIdx < 0 {
+		return false
+	}
+	si, ci := item.scenarioIdx, item.cueIdx
+	sc := m.scenarios[si]
+	if !sc.cueExpanded[ci] {
+		return false
+	}
+	return len(activeTabLines(sc, ci)) > m.cursorMaxVisible()
+}
+
+// scrollContent adjusts the content offset for the cursor item by delta.
+func (m phaseModel) scrollContent(delta int) phaseModel {
+	if len(m.visible) == 0 {
+		return m
+	}
+	item := m.visible[m.cursor]
+	if item.kind == phaseKindScenario || item.cueIdx < 0 {
+		return m
+	}
+	si, ci := item.scenarioIdx, item.cueIdx
+	if ci >= len(m.scenarios[si].cueContentOffset) {
+		return m
+	}
+	total := len(activeTabLines(m.scenarios[si], ci))
+	maxVis := m.cursorMaxVisible()
+	off := m.scenarios[si].cueContentOffset[ci] + delta
+	if off < 0 {
+		off = 0
+	}
+	if off > total-maxVis {
+		off = total - maxVis
+	}
+	if off < 0 {
+		off = 0
+	}
+	m.scenarios[si].cueContentOffset[ci] = off
+	return m
+}
+
+// actionRightTabOnly cycles to the next tab and resets content offset (used in content mode).
+func (m phaseModel) actionRightTabOnly() phaseModel {
+	if len(m.visible) == 0 {
+		return m
+	}
+	item := m.visible[m.cursor]
+	si, ci := item.scenarioIdx, item.cueIdx
+	if item.kind == phaseKindScenario || ci < 0 {
+		return m
+	}
+	sc := m.scenarios[si]
+	hasDetails := len(sc.detailLines[ci]) > 0
+	hasExec := len(sc.execLines[ci]) > 0
+	cur := sc.activeTab[ci]
+	for delta := tabID(1); delta < tabCount; delta++ {
+		next := (cur + delta) % tabCount
+		if next == tabDetails && hasDetails {
+			m.scenarios[si].activeTab[ci] = next
+			m.scenarios[si].cueContentOffset[ci] = 0
+			return m
+		}
+		if next == tabExec && hasExec {
+			m.scenarios[si].activeTab[ci] = next
+			m.scenarios[si].cueContentOffset[ci] = 0
+			return m
+		}
+	}
+	return m
+}
+
+// actionLeftContentMode handles ← in content mode:
+// if on tab > 0: go to previous tab and reset offset; if on tab 0: exit content mode.
+func (m phaseModel) actionLeftContentMode() phaseModel {
+	if len(m.visible) == 0 {
+		return m
+	}
+	item := m.visible[m.cursor]
+	si, ci := item.scenarioIdx, item.cueIdx
+	if item.kind == phaseKindScenario || ci < 0 {
+		m.contentFocus = false
+		return m
+	}
+	sc := m.scenarios[si]
+	cur := sc.activeTab[ci]
+	for t := int(cur) - 1; t >= 0; t-- {
+		if tabID(t) == tabDetails && len(sc.detailLines[ci]) > 0 {
+			m.scenarios[si].activeTab[ci] = tabID(t)
+			m.scenarios[si].cueContentOffset[ci] = 0
+			return m
+		}
+		if tabID(t) == tabExec && len(sc.execLines[ci]) > 0 {
+			m.scenarios[si].activeTab[ci] = tabID(t)
+			m.scenarios[si].cueContentOffset[ci] = 0
+			return m
+		}
+	}
+	// Already on first/only tab: exit content mode.
+	m.contentFocus = false
 	return m
 }
 
@@ -1367,11 +1755,19 @@ func RunLiveTUI(
 	ctx = cue.WithFileProgress(ctx, func(fullName string, scanned, total int) {
 		prog.Send(liveFileProgressMsg{fullName: fullName, scanned: scanned, total: total})
 	})
+	var curScenario, curCue atomic.Value
 	ctx = cue.WithApplyStep(ctx, func(scenario, cueName string) {
+		curScenario.Store(scenario)
+		curCue.Store(cueName)
 		prog.Send(liveApplyStepMsg{scenarioName: scenario, cueName: cueName})
 	})
 	ctx = cue.WithApplyResult(ctx, func(r cue.Result) {
 		prog.Send(liveApplyResultMsg{result: r})
+	})
+	ctx = cue.WithOutputLine(ctx, func(line string, isStderr bool) {
+		s, _ := curScenario.Load().(string)
+		c, _ := curCue.Load().(string)
+		prog.Send(liveOutputLineMsg{scenarioName: s, cueName: c, line: line, isStderr: isStderr})
 	})
 
 	type runResult struct {

@@ -54,6 +54,9 @@ func (m *mockConn) Download(path string) ([]byte, error) {
 }
 func (m *mockConn) Exists(path string) (bool, error) { return true, nil }
 func (m *mockConn) PathSep() string                  { return "/" }
+func (m *mockConn) RunStream(cmd string, onLine func(string, bool)) (string, string, int, error) {
+	return "", "", 0, nil
+}
 
 // TestBinaryExecutor_fastPath_mtimeSize: mtime+size match in pre-fetched stats → Equal, no Run calls.
 func TestBinaryExecutor_fastPath_mtimeSize(t *testing.T) {

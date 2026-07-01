@@ -15,6 +15,7 @@ type SSHConn interface {
 	Run(cmd string) (stdout, stderr string, exitCode int, err error)
 	RunSudo(cmd string) (stdout, stderr string, exitCode int, err error)
 	RunWithEnv(cmd string, env map[string]string) (stdout, stderr string, exitCode int, err error)
+	RunStream(cmd string, onLine func(line string, isStderr bool)) (stdout, stderr string, exitCode int, err error)
 	Upload(localPath, remotePath string, mode fs.FileMode, useSudo bool) error
 	UploadBytes(data []byte, remotePath string, mode fs.FileMode, useSudo bool) error
 	Download(remotePath string) ([]byte, error)
